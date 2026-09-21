@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+device.db
+device.db-journal
+device.id
