@@ -49,13 +49,31 @@ uvicorn main:app --host 0.0.0.0 --port 8000
 | `DEVICE_CODE` | `DEV-XXXXXXXX` | Kode device (harus match admin panel) |
 | `DEVICE_NAME` | — | Nama device |
 | `REMOTE_DATABASE_URL` | — | PostgreSQL URL (DB yang sama dengan admin panel) |
+| `JWT_SECRET` | *harus diisi* | Secret HS256 yang sama dengan `backend2/.env` untuk memverifikasi token Bearer |
 | `LOCAL_DB_PATH` | `device.db` | Path file SQLite lokal |
 | `SYNC_INTERVAL_SECONDS` | `30` | Interval sync |
 | `SYNC_ON_STARTUP` | `true` | Jalankan sync saat service start |
 | `PAYMENT_PROVIDER` | `stub` | Provider payment |
+| `STORAGE_BASE_URL` | `https://storage.arnatech.id` | Base URL storage service (proxy upload API) |
+| `SSO_BASE_URL` | `https://sso.arnatech.id/api` | Base URL SSO — digunakan proxy `/auth/device/*` |
 | `APP_VERSION` | `0.1.0` | Versi app device |
 
+## Auth
+
+Semua endpoint kecuali `/`, `/docs`, `/redoc`, `/openapi.json`, dan onboarding
+device (`POST /auth/device/authorize/`, `/token/`, `/refresh/`) mewajibkan header
+`Authorization: Bearer <token>`. Token adalah JWT terstruktur (HS256) yang memuat
+claim `user_id` (string), sama seperti token yang dipakai di repo `backend2` —
+token yang sama diterima oleh kedua service. Mint token untuk testing lokal:
+
+```powershell
+# di repo backend2
+.\.venv\Scripts\python.exe -c "from lib.token import create_token; print(create_token('test-user', 'org-1'))"
+```
+
 ## Endpoints
+
+> Semua endpoint di bawah (kecuali `/`) memerlukan `Authorization: Bearer <token>`.
 
 | Method | Path | Deskripsi |
 |--------|------|-----------|
@@ -77,6 +95,15 @@ uvicorn main:app --host 0.0.0.0 --port 8000
 | `GET` | `/payments/{id}` | Detail payment |
 | `GET` | `/sync/status` | Status sync + antrian pending |
 | `POST` | `/sync/trigger` | Trigger sync manual |
+| `POST` | `/api/files/upload` | Inisiasi upload file (multipart presign) |
+| `POST` | `/api/files/{file_id}/parts/presign` | Presign parts upload |
+| `POST` | `/api/files/{file_id}/complete` | Selesaikan upload multipart |
+| `POST` | `/api/files/{file_id}/abort` | Batalkan upload |
+| `POST` | `/auth/device/authorize/` | Device authorization — mulai login (proxi ke SSO) |
+| `POST` | `/auth/device/verification/` | Approve/deny oleh operator (Bearer, proxi ke SSO) |
+| `POST` | `/auth/device/token/` | Poll token saat device disetujui (proxi ke SSO) |
+| `POST` | `/auth/device/refresh/` | Rotasi refresh token (proxi ke SSO) |
+| `POST` | `/auth/device/revoke/` | Revoke device oleh operator (Bearer, proxi ke SSO) |
 
 ## Alur sync
 

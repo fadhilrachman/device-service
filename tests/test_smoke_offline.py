@@ -12,6 +12,7 @@ os.environ["LOCAL_DB_PATH"] = os.path.join(_TMPDIR, "device.db")
 os.environ["DEVICE_CODE"] = "TEST-DEV-0001"
 os.environ["DEVICE_NAME"] = "Test Device"
 os.environ["SYNC_ON_STARTUP"] = "false"
+os.environ["SSO_BASE_URL"] = "http://127.0.0.1:1"
 
 from fastapi.testclient import TestClient  # noqa: E402
 
@@ -20,6 +21,23 @@ from main import app  # noqa: E402
 from models.sync import SyncOutbox  # noqa: E402
 from models.voucher import Voucher  # noqa: E402
 from models.voucher_batch import VoucherBatch  # noqa: E402
+
+import base64  # noqa: E402
+import json  # noqa: E402
+import time  # noqa: E402
+
+
+def _make_token(user_id: str = "test-device-1") -> str:
+    """Mint a structurally valid HS256-style JWT accepted by ProtectTokenMiddleware."""
+    def _b64(data: dict) -> str:
+        raw = json.dumps(data).encode("utf-8")
+        return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
+    header = {"alg": "HS256", "typ": "JWT"}
+    payload = {"user_id": user_id, "iat": 0, "exp": int(time.time()) + 3600}
+    return f"{_b64(header)}.{_b64(payload)}.sig"
+
+
+AUTH_HEADERS = {"Authorization": f"Bearer {_make_token()}"}
 
 PASS = 0
 
@@ -30,7 +48,7 @@ def ok(label: str):
     print(f"  OK  {label}")
 
 
-with TestClient(app) as client:
+with TestClient(app, headers=AUTH_HEADERS) as client:
     # 1. Health
     r = client.get("/")
     assert r.status_code == 200 and "running" in r.json()["message"]
@@ -212,5 +230,70 @@ with TestClient(app) as client:
     r = client.get("/vouchers/ZZZZ-9999")
     assert r.status_code == 404
     ok("unknown voucher -> 404")
+
+    # 10. Device authorization API (/auth/device/*) proxies to SSO
+    r = client.get("/openapi.json")
+    openapi = r.json()
+    for path in [
+        "/auth/device/authorize/",
+        "/auth/device/verification/",
+        "/auth/device/token/",
+        "/auth/device/refresh/",
+        "/auth/device/revoke/",
+    ]:
+        assert path in openapi["paths"], path
+    ok("OpenAPI includes all 5 /auth/device paths")
+
+    # authorized operator call reaches the proxy; SSO unreachable offline -> 502
+    r = client.post(
+        "/auth/device/verification/",
+        json={
+            "user_code": "ABCD-EFGH",
+            "organization_id": "12345678-1234-4123-8234-123456789012",
+            "action": "approve",
+        },
+    )
+    assert r.status_code == 502 and "unreachable" in r.json()["detail"], r.text
+    ok("POST /auth/device/verification/ with token proxies to SSO (502 offline)")
+
+with TestClient(app) as client_no_auth:
+    # operator-only endpoints reject requests without a Bearer token
+    r = client_no_auth.post(
+        "/auth/device/revoke/",
+        json={"device_id": "12345678-1234-4123-8234-123456789012"},
+    )
+    assert r.status_code == 401
+    ok("POST /auth/device/revoke/ without token -> 401 (operator-only)")
+
+    r = client_no_auth.post(
+        "/auth/device/verification/",
+        json={
+            "user_code": "ABCD-EFGH",
+            "organization_id": "12345678-1234-4123-8234-123456789012",
+            "action": "approve",
+        },
+    )
+    assert r.status_code == 401
+    ok("POST /auth/device/verification/ without token -> 401 (operator-only)")
+
+    # onboarding endpoints are public (kiosk has no token yet): reach the proxy
+    r = client_no_auth.post(
+        "/auth/device/token/",
+        json={
+            "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+            "device_code": "opaque-device-code",
+        },
+    )
+    assert r.status_code != 401
+    assert r.status_code == 502  # SSO unreachable offline
+    ok("POST /auth/device/token/ without token passes middleware (public)")
+
+    r = client_no_auth.post(
+        "/auth/device/refresh/",
+        json={"refresh_token": "opaque-refresh-token"},
+    )
+    assert r.status_code != 401
+    assert r.status_code == 502
+    ok("POST /auth/device/refresh/ without token passes middleware (public)")
 
 print(f"\nALL {PASS} offline smoke tests passed ({_TMPDIR})")

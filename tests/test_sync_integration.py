@@ -31,6 +31,9 @@ os.environ["SYNC_ON_STARTUP"] = "false"
 os.environ["SYNC_INTERVAL_SECONDS"] = "0"
 
 import sqlite3  # noqa: E402
+import base64  # noqa: E402
+import json  # noqa: E402
+import time  # noqa: E402
 
 import config as config_mod  # noqa: E402
 from database import init_db, local_session, remote_session  # noqa: E402
@@ -56,6 +59,19 @@ REDEEMED = "PHB-0001"
 SEED: dict = {}
 TRACKED: dict = {"sessions": [], "payments": []}
 EXTRA_VOUCHERS: list[str] = []
+
+
+def _make_token(user_id: str = "test-device-1") -> str:
+    """Mint a structurally valid HS256-style JWT accepted by ProtectTokenMiddleware."""
+    def _b64(data: dict) -> str:
+        raw = json.dumps(data).encode("utf-8")
+        return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
+    header = {"alg": "HS256", "typ": "JWT"}
+    payload = {"user_id": user_id, "iat": 0, "exp": int(time.time()) + 3600}
+    return f"{_b64(header)}.{_b64(payload)}.sig"
+
+
+AUTH_HEADERS = {"Authorization": f"Bearer {_make_token()}"}
 
 
 def ok(label: str):
@@ -148,7 +164,7 @@ def main() -> None:
 
     from main import app
 
-    with TestClient(app) as client:
+    with TestClient(app, headers=AUTH_HEADERS) as client:
         r = client.get("/config")
         assert r.status_code == 200
         cfg = r.json()
