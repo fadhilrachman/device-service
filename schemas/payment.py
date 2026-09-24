@@ -25,6 +25,7 @@ class PaymentResponse(BaseModel):
     status: str
     provider: str
     provider_ref: Optional[str] = None
+    gateway_payload: Optional[dict] = None
     paid_at: object = None
     created_at: object = None
     updated_at: object = None
