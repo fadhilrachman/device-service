@@ -276,6 +276,11 @@ with TestClient(app) as client_no_auth:
     assert r.status_code == 401
     ok("POST /auth/device/verification/ without token -> 401 (operator-only)")
 
+    # docs/swagger UI must not require a token
+    r = client_no_auth.get("/swagger")
+    assert r.status_code != 401
+    ok("GET /swagger without token passes middleware (public)")
+
     # onboarding endpoints are public (kiosk has no token yet): reach the proxy
     r = client_no_auth.post(
         "/auth/device/token/",

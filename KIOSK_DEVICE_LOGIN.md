@@ -1,237 +1,233 @@
-# Kiosk Device Login
+# Arnatech Device Login Implementation Guide
 
-This guide defines the kiosk-side implementation for a photobooth, POS,
-scanner, CLI, agent, or other unattended Arnatech device. It applies OAuth 2.0
-Device Authorization Grant using the Arna SSO API base URL:
+## Purpose
 
-```text
-https://sso.arnatech.id/api
-```
+Use this guide for public devices such as photobooths, kiosks, POS terminals, scanners, and event devices. Visitors do not sign in. Instead, an authorized organization operator pairs the physical device once through Arna SSO.
 
-The kiosk has no human sign-in screen. A visitor can use the kiosk without an
-account, while the installed machine authenticates as a tenant-bound device.
+The implementation uses the OAuth 2.0 Device Authorization Grant. It does **not** use an operator's personal app token.
 
-## Scope and ownership
+## Architecture and ownership
 
-The kiosk implements only:
+| Concern | Owner | Rule |
+| --- | --- | --- |
+| User identity, organizations, permissions, device registration, revocation | Arna SSO | Device credentials are issued and managed here. |
+| Tenant UUID and tenant-owned application data | ArnaSite | Use the public UUID `tenant_id`, not the legacy numeric tenant `id`. |
+| Photobooth business API | Photobooth backend | Validate device credentials and scope every record by organization and tenant. |
+| Commerce and File Manager access | Photobooth backend | Use separate service credentials; do not give a kiosk token direct access. |
 
-1. QR-code login with a manual-code fallback.
-2. Device-token polling and refresh.
-3. Local logout.
+Use `photobooth-api` as the device token audience. Do not use `photobooth`.
 
-The account dashboard owns device administration:
+## 1. Provision the operator, organization, and tenant
 
-- approving and registering a device;
-- assigning the device to an organization and tenant;
-- listing device registrations; and
-- revoking or unpairing lost, retired, or compromised devices.
+1. The operator registers through the normal SSO account flow.
+2. The operator completes email OTP verification and signs in.
+3. In the Account dashboard, create or select the organization/company.
+4. Create or select the ArnaSite tenant associated with that organization.
+5. Save these values for the device configuration:
 
-Local logout and dashboard revoke have different effects. Local logout removes
-credentials from one machine. Dashboard revoke invalidates the device
-registration and its refresh credentials everywhere.
+   - `organization_id`: the SSO organization UUID.
+   - `tenant_id`: the public ArnaSite tenant UUID.
 
-## Prerequisites
+`tenant_id` must be a UUID. Do not send the ArnaSite legacy numeric `id` to SSO.
 
-Provision each installed machine with a stable, unique `client_id`. The kiosk
-also needs the tenant UUID, its permitted audience, and the minimum required
-scopes. Do not use a person's access token, a browser session, or a generic
-service token as the kiosk identity.
+The operator who approves pairing must have the `device.activate` permission for the organization.
 
-Example values:
+## 2. Generate a stable device identity
+
+Each physical installation needs a unique and stable `client_id`. Keep it through normal software restarts. For example:
 
 ```text
-client_id: ols-photobooth-cfd-01
-device_name: OLS Photobooth — CFD 01
-tenant_id: <OLS tenant UUID>
-audience: photobooth
-scopes: ["photobooth.session.write", "commerce.checkout.create"]
+photobooth-ols-cfd-001
 ```
 
-Store a device access token and refresh token only in the operating system's
-secure device storage or an equivalent encrypted secret store. Never expose
-them to a browser, visitor UI, log, analytics event, or URL.
+Use a new `client_id` when a device is permanently replaced. Do not share one client ID across multiple physical devices.
 
-## 1. Start device login
+## 3. Request device authorization
 
-When no valid local device credential exists, call:
+When the device is not paired, call Arna SSO from the device application or its trusted backend:
 
 ```http
-POST /auth/device/authorize/
+POST https://sso.arnatech.id/api/auth/device/authorize/
 Content-Type: application/json
 ```
 
 ```json
 {
-  "client_id": "ols-photobooth-cfd-01",
-  "device_name": "OLS Photobooth — CFD 01",
-  "tenant_id": "<OLS-tenant-uuid>",
-  "audience": "photobooth",
-  "scopes": [
-    "photobooth.session.write",
-    "commerce.checkout.create"
-  ]
+  "client_id": "photobooth-ols-cfd-001",
+  "device_name": "OLS CFD Photobooth 001",
+  "organization_id": "ORG_UUID",
+  "tenant_id": "TENANT_UUID",
+  "audience": "photobooth-api",
+  "scopes": ["photobooth.session"]
 }
 ```
 
-Optionally include `public_key_thumbprint` when the device supports
-proof-of-possession key binding.
-
-The response includes:
+SSO returns a short-lived, one-time pairing result similar to:
 
 ```json
 {
-  "device_code": "<secret opaque value>",
+  "device_code": "SECRET_DEVICE_CODE",
   "user_code": "ABCD-EFGH",
   "verification_uri": "https://sso.arnatech.id/...",
-  "verification_uri_complete": "https://sso.arnatech.id/...?...",
+  "verification_uri_complete": "https://sso.arnatech.id/...code=ABCD-EFGH",
   "expires_in": 600,
   "interval": 5
 }
 ```
 
-Render `verification_uri_complete` as a QR code. Also show `user_code` and a
-short fallback instruction, such as: **Open SSO device approval and enter this
-code: ABCD-EFGH**.
+Treat `device_code` as a secret. Do not display it, log it, or send it to the visitor browser.
 
-The `device_code` is a secret used by the machine only. The `user_code` is the
-short code a human may enter in the approval browser.
+## 4. Build the kiosk pairing screen
 
-## 2. Approval occurs in the account dashboard
+Display all of the following:
 
-The operator scans the QR code or opens the verification page and signs in to
-SSO. SSO reuses the operator's existing browser session when possible.
+- A QR code containing `verification_uri_complete`.
+- The readable `user_code`.
+- A manual fallback URL, `verification_uri`.
+- A clear waiting state, for example: “Scan this code with an authorized Arna account.”
 
-An organization owner, superuser, or member with `device.activate` chooses the
-owning organization and approves the code. The dashboard calls:
+Suggested states:
+
+```text
+Not paired -> Pairing code displayed -> Waiting for approval -> Paired and ready
+                                                   |-> Denied, expired, or failed -> Start again
+```
+
+The visitor-facing experience remains login-free. Only an authorized operator scans the code or enters the code manually.
+
+## 5. Approve pairing in the operator browser
+
+The operator opens the QR URL, signs in to SSO if needed, verifies the displayed device, organization, tenant, and requested scopes, then approves it.
+
+The approval request is:
 
 ```http
-POST /auth/device/verification/
-Authorization: Bearer <operator access token>
+POST https://sso.arnatech.id/api/auth/device/verification/
+Authorization: Bearer OWNER_ACCESS_TOKEN
+Content-Type: application/json
 ```
 
 ```json
 {
   "user_code": "ABCD-EFGH",
-  "organization_id": "<OLS-organization-uuid>",
+  "organization_id": "ORG_UUID",
   "action": "approve"
 }
 ```
 
-SSO binds the device to the selected organization, the requested tenant,
-audience, and approved scopes. The kiosk must never collect the operator's
-password, MFA code, or browser token.
+SSO is responsible for confirming the operator belongs to the organization and has `device.activate`. The requested tenant is already bound to the pending device authorization and must not be replaced from browser input.
 
-## 3. Poll for the device token pair
+## 6. Poll for the device token
 
-Wait at least the returned `interval`, then call:
+After the device authorization request, poll at the returned interval:
 
 ```http
-POST /auth/device/token/
+POST https://sso.arnatech.id/api/auth/device/token/
 Content-Type: application/json
 ```
 
 ```json
 {
   "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
-  "device_code": "<secret device_code>"
+  "device_code": "SECRET_DEVICE_CODE"
 }
 ```
 
-Expected polling responses:
+Handle outcomes as follows:
 
-| Response | Kiosk behavior |
+| Result | Device behavior |
 | --- | --- |
-| `authorization_pending` | Keep the QR screen visible and retry after `interval`. |
-| `slow_down` | Increase the delay to the returned interval before retrying. |
-| `access_denied` | Remove the pending request and show a new QR login. |
-| `expired_token` or `invalid_grant` | Remove the pending request and start a new login. |
-| `200` | Securely store the returned token pair and enter kiosk mode. |
+| `authorization_pending` | Continue waiting at the configured interval. |
+| `slow_down` | Increase the polling interval before retrying. |
+| `access_denied`, `expired_token`, `invalid_grant` | Clear pairing state and return to the QR screen. |
+| Success | Securely persist the access token and rotated refresh token. |
 
-On success, the response is:
+Do not poll more frequently than `interval`.
 
-```json
-{
-  "access_token": "<short-lived device JWT>",
-  "refresh_token": "<rotating opaque token>",
-  "token_type": "Bearer",
-  "expires_in": 900
-}
-```
+## 7. Store and refresh credentials securely
 
-The authorization request is one-time. Do not poll or reuse its `device_code`
-after success.
+Store device access and refresh credentials only in trusted device storage, such as an operating-system keychain, TPM-backed secret storage, or a server-side kiosk session.
 
-## 4. Use and refresh the credential
+Do not store long-lived credentials in browser localStorage, a public QR payload, source code, or environment files shipped to the visitor device.
 
-Call the kiosk's intended backend with:
+Refresh before the access token expires:
 
 ```http
-Authorization: Bearer <access_token>
-```
-
-The receiving backend must validate the token's `token_type=device`,
-`device_id`, `organization_id` or `org_id`, `tenant_id`, `aud`, and scopes. It
-must reject a token with a different audience, tenant, or required scope.
-
-Before the access token expires, rotate it with:
-
-```http
-POST /auth/device/refresh/
+POST https://sso.arnatech.id/api/auth/device/refresh/
 Content-Type: application/json
 ```
 
 ```json
 {
-  "refresh_token": "<current refresh token>"
+  "refresh_token": "CURRENT_REFRESH_TOKEN"
 }
 ```
 
-Persist the replacement refresh token atomically. A used refresh token cannot
-be safely reused.
+Refresh tokens rotate. Replace the stored access token and refresh token atomically. If refresh fails, clear local credentials and begin pairing again.
 
-## 5. Local kiosk logout
+Where supported by the hardware, bind the device credential to a device-held key with DPoP or mTLS.
 
-Local logout should:
+## 8. Authorize calls in the photobooth backend
 
-1. Cancel any active device-token polling timer.
-2. Delete the locally stored access token, refresh token, and pending device
-   code from secure storage.
-3. Clear in-memory authenticated state.
-4. Return to the QR-login screen.
-
-It must not call the normal human `/auth/logout/` endpoint and does not revoke
-the server-side device registration. The next operator can pair the same kiosk
-through a new QR approval.
-
-## Account-dashboard revoke or unpair
-
-For a machine that is lost, retired, compromised, or must no longer be trusted,
-an authorized administrator uses the account dashboard. The dashboard calls:
+The device calls the photobooth API with:
 
 ```http
-POST /auth/device/revoke/
-Authorization: Bearer <authorized operator token>
+Authorization: Bearer DEVICE_ACCESS_TOKEN
 ```
 
-```json
-{
-  "device_id": "<registered device UUID>"
-}
+The photobooth backend must reject a token unless all of these checks pass:
+
+- RS256 signature and SSO issuer are valid.
+- Token is not expired.
+- Audience is exactly `photobooth-api`.
+- `token_type` equals `device`.
+- `device_id`, `organization_id`, and `tenant_id` claims exist and are valid.
+- Required scope, for example `photobooth.session`, is present.
+- The SSO device registration is active.
+- The requested event, station, or resource is assigned to that device.
+
+Persist `organization_id` and `tenant_id` on every tenant-owned photobooth session, photo job, payment intent, and entitlement-sensitive record. Queries and mutations must constrain both identifiers.
+
+## 9. Process payments safely
+
+The kiosk token is only for the photobooth API. The photobooth backend uses its own narrowly scoped service credential to create Commerce payment intents or request File Manager storage.
+
+For every QRIS payment:
+
+1. The photobooth backend derives `organization_id` and `tenant_id` from the validated device token.
+2. It creates the payment/invoice through the appropriate trusted backend integration.
+3. Payment Router receives provider callbacks and publishes payment facts through Pulsar.
+4. The photobooth backend processes events idempotently and activates the purchased session only after the authoritative payment event.
+
+Never trust a payment result sent by a visitor browser as proof of payment.
+
+## 10. Logout, revocation, and replacement
+
+### Local kiosk logout
+
+1. Delete locally stored access token, refresh token, and pairing state.
+2. Return to the QR pairing screen.
+
+### Remote operator action
+
+Device registration, inventory, reassignment, and revocation are managed in the Account dashboard. Dashboard revocation calls:
+
+```http
+POST https://sso.arnatech.id/api/auth/device/revoke/
 ```
 
-Revocation deactivates the registration and invalidates its refresh
-credentials. The device must complete a new QR login and approval before it
-can operate again.
+After revocation, the device must fail on its next refresh and return to pairing. Keep device access tokens short-lived so revocation takes effect promptly.
 
-## Do not implement
+## Implementation checklist
 
-- A username/password, passkey, MFA, Google, or WhatsApp login form on the
-  kiosk.
-- Parent-domain or shared browser cookies.
-- A device credential in `localStorage`, query parameters, QR content, or logs.
-- Direct calls from a public kiosk UI to Commerce or File Manager.
-- A device-driven revocation workflow; unpairing belongs to the account
-  dashboard.
-
-For system-wide tenancy, payment, and device-token validation requirements,
-also read the [platform contract](arnatech-platform/references/platform-contract.md).
+- [ ] Normal SSO operator registration and verified email flow are used.
+- [ ] Organization UUID and ArnaSite public tenant UUID are configured.
+- [ ] Every physical device has its own stable client ID.
+- [ ] The kiosk renders QR and manual-code fallback screens.
+- [ ] The kiosk honors polling interval and handles expiry/denial safely.
+- [ ] Tokens are stored in secure device or server-side storage.
+- [ ] Refresh-token rotation is atomic.
+- [ ] The photobooth API validates issuer, signature, audience, token type, scope, device, organization, tenant, and active registration.
+- [ ] Tenant-owned records always persist and query by both organization and tenant.
+- [ ] Commerce and File Manager calls use backend service credentials, not kiosk credentials.
+- [ ] Local logout and dashboard-driven remote revocation have been tested.

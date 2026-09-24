@@ -13,6 +13,7 @@ PUBLIC_PATHS = {
     "/",
     "/docs",
     "/redoc",
+    "/swagger",
     "/openapi.json",
     # Device authorization onboarding is called by the unauthenticated kiosk.
     "/auth/device/authorize",
@@ -44,11 +45,11 @@ def decode_base64url_json(value: str) -> dict[str, Any] | None:
 
 class ProtectTokenMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next) -> Response:
-        if request.url.path in PUBLIC_PATHS or request.url.path.startswith(("/docs/", "/redoc/")):
+        if request.url.path in PUBLIC_PATHS or request.url.path.startswith(("/docs/", "/redoc/", "/swagger/")):
             return await call_next(request)
 
         authorization = request.headers.get("authorization")
-
+        print(authorization)
         if not authorization:
             return unauthorized("Authorization header is required.")
 
@@ -75,11 +76,11 @@ class ProtectTokenMiddleware(BaseHTTPMiddleware):
         # if expiration <= now_in_seconds:
         #     return unauthorized("Token has expired.")
 
-        user_id = payload.get("user_id")
-        if not isinstance(user_id, str) or len(user_id) == 0:
-            return unauthorized("Token user_id is required.")
+        # user_id = payload.get("user_id")
+        # if not isinstance(user_id, str) or len(user_id) == 0:
+        #     return unauthorized("Token user_id is required.")
 
-        request.state.sso_user_id = user_id
+        # request.state.sso_user_id = user_id
         request.state.sso_org_id = payload.get("org_id")
         request.state.sso_token_header = header
         request.state.sso_token_payload = payload
