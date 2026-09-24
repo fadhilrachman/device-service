@@ -1,6 +1,8 @@
 from typing import Optional
 from pydantic import BaseModel, ConfigDict
 
+from schemas.catalog import BoothResponse, CampaignResponse
+
 
 class DeviceHeartbeatRequest(BaseModel):
     storage_state: Optional[str] = None
@@ -19,6 +21,8 @@ class DeviceAssignmentResponse(BaseModel):
     booth_name: Optional[str] = None
     booth_location: Optional[str] = None
     campaign_id: Optional[str] = None
+    booth: Optional[BoothResponse] = None
+    campaign: Optional[CampaignResponse] = None
 
 
 class DeviceResponse(BaseModel):

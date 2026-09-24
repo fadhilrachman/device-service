@@ -17,7 +17,11 @@ os.environ["SSO_BASE_URL"] = "http://127.0.0.1:1"
 from fastapi.testclient import TestClient  # noqa: E402
 
 from database import local_session  # noqa: E402
+from lib.time import wib_now  # noqa: E402
 from main import app  # noqa: E402
+from models.booth import Booth  # noqa: E402
+from models.campaign import Campaign  # noqa: E402
+from models.device_assignment import DeviceAssignment  # noqa: E402
 from models.sync import SyncOutbox  # noqa: E402
 from models.voucher import Voucher  # noqa: E402
 from models.voucher_batch import VoucherBatch  # noqa: E402
@@ -197,7 +201,27 @@ with TestClient(app, headers=AUTH_HEADERS) as client:
     assert r.status_code == 200, r.text
     ok("voucher verify ignores offline_eligible (200)")
 
-    # 7. Payment flow offline
+    # 7. Payment flow offline (device assigned to a booth, like a real kiosk)
+    with local_session() as db:
+        db.add(Campaign(id="camp-smoke", name="Smoke Campaign", price=50000))
+        db.add(
+            Booth(
+                id="booth-smoke",
+                name="Smoke Booth",
+                status="active",
+                campaign_id="camp-smoke",
+            )
+        )
+        db.add(
+            DeviceAssignment(
+                booth_id="booth-smoke",
+                device_id=device_id,
+                status="active",
+                assigned_from=wib_now(),
+            )
+        )
+        db.commit()
+
     r = client.post(
         "/payments",
         json={"session_id": sid, "device_id": device_id, "amount": 50000, "method": "QRIS"},
@@ -205,6 +229,8 @@ with TestClient(app, headers=AUTH_HEADERS) as client:
     assert r.status_code == 201, r.text
     payment = r.json()["payment"]
     assert payment["status"] == "pending"
+    assert payment["booth_id"] == "booth-smoke", payment
+    assert payment["campaign_id"] == "camp-smoke", payment
     assert payment["provider_ref"].startswith("stub-")
     assert "mock-pay" in r.json()["charge_url"]
     ok("POST /payments (offline-first)")

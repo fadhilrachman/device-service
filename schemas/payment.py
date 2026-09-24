@@ -1,13 +1,21 @@
 from typing import Optional
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class PaymentCreate(BaseModel):
     session_id: Optional[str] = None
-    booth_id: Optional[str] = None
-    campaign_id: Optional[str] = None
-    device_id: Optional[str] = None
-    amount: Optional[float] = None
+    booth_id: Optional[str] = Field(
+        default=None, description="Defaults to the device's active assignment booth."
+    )
+    campaign_id: Optional[str] = Field(
+        default=None, description="Defaults to the booth's campaign."
+    )
+    device_id: Optional[str] = Field(
+        default=None, description="Defaults to the calling device."
+    )
+    amount: Optional[float] = Field(
+        default=None, description="Defaults to the campaign price."
+    )
     method: Optional[str] = None
 
 

@@ -43,7 +43,10 @@ from lib.commerce import (  # noqa: E402
     start_checkout,
 )
 from main import app  # noqa: E402
+from lib.time import wib_now  # noqa: E402
+from models.booth import Booth  # noqa: E402
 from models.campaign import Campaign  # noqa: E402
+from models.device_assignment import DeviceAssignment  # noqa: E402
 from sync import engine  # noqa: E402
 
 PASS = 0
@@ -245,6 +248,22 @@ with TestClient(app, headers=ORG_HEADERS) as tclient:
 
     with local_session() as db:
         db.add(Campaign(id="camp-1", name="Test Campaign", price=50000))
+        db.add(
+            Booth(
+                id="booth-1",
+                name="Booth Commerce 01",
+                status="active",
+                campaign_id="camp-1",
+            )
+        )
+        db.add(
+            DeviceAssignment(
+                booth_id="booth-1",
+                device_id=device_id,
+                status="active",
+                assigned_from=wib_now(),
+            )
+        )
         db.commit()
 
     ROUTES.clear()
@@ -261,6 +280,8 @@ with TestClient(app, headers=ORG_HEADERS) as tclient:
     assert payment["provider"] == "commerce", payment
     assert payment["status"] == "pending", payment
     assert payment["provider_ref"] == "INV-ARNA-00001", payment
+    assert payment["booth_id"] == "booth-1", payment
+    assert payment["campaign_id"] == "camp-1", payment
     assert float(payment["amount"]) == 50000.0, payment
     details = payment["gateway_payload"]
     assert details["order_id"] == "order-1", details

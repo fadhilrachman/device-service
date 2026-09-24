@@ -8,6 +8,7 @@ from config import (
     COMMERCE_TIMEOUT_SECONDS,
     resolve_device_id,
 )
+from api.device import _active_assignment
 from database import get_db
 from lib.commerce import (
     CommerceClient,
@@ -50,8 +51,22 @@ def create_payment(payload: PaymentCreate, request: Request, db: Session = Depen
     device_id = payload.device_id or resolve_device_id()
     if not db.get(Device, device_id):
         raise HTTPException(status_code=404, detail="Device not found.")
-    if payload.booth_id is not None and not db.get(Booth, payload.booth_id):
+
+    # Explicit kiosk values win; the rest is derived from the active assignment
+    # so the kiosk only needs to send {"method": ...} in the common case.
+    booth_id = payload.booth_id
+    if booth_id is None:
+        assignment = _active_assignment(db, device_id)
+        booth_id = assignment.booth_id if assignment else None
+    if booth_id is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Device is not assigned to any booth; booth_id is required.",
+        )
+    booth = db.get(Booth, booth_id)
+    if booth is None:
         raise HTTPException(status_code=404, detail="Booth not found.")
+    campaign_id = payload.campaign_id or booth.campaign_id
 
     offline = not engine.is_online()
     gateway = get_gateway()
@@ -67,10 +82,10 @@ def create_payment(payload: PaymentCreate, request: Request, db: Session = Depen
 
     db_obj = Payment(
         session_id=payload.session_id,
-        booth_id=payload.booth_id,
-        campaign_id=payload.campaign_id,
+        booth_id=booth_id,
+        campaign_id=campaign_id,
         device_id=device_id,
-        amount=_resolve_amount(db, payload.campaign_id, payload.amount),
+        amount=_resolve_amount(db, campaign_id, payload.amount),
         method=payload.method,
         status="pending",
     )
