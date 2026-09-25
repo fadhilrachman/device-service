@@ -1,7 +1,12 @@
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse, Response
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
 
+from config import resolve_device_id
+from database import get_db
 from lib.sso import SSOClient, SSOError
+from models.device import Device
 from schemas.auth_device import (
     DeviceAuthorizeRequest,
     DeviceAuthorizeResponse,
@@ -33,6 +38,46 @@ def _forward(response) -> Response:
     return JSONResponse(status_code=response.status_code, content=body)
 
 
+def _bind_tenant_on_authorize(db: Session, tenant_id: str) -> None:
+    """Persist tenant_id on the local singleton device after SSO authorize succeeds.
+
+    Rules: tenant_id is optional (NULL until first authorize) & unique. A device
+    already bound to a different tenant, or a tenant already bound to another
+    device, is rejected with 409.
+    """
+    from sync import engine as sync_engine
+
+    device_id = resolve_device_id()
+    device = db.get(Device, device_id)
+    if device is None:
+        device = sync_engine.ensure_local_device(db)
+    if device.tenant_id is not None and device.tenant_id != tenant_id:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Device already bound to a tenant.",
+        )
+    claimed = (
+        db.query(Device)
+        .filter(Device.tenant_id == tenant_id, Device.id != device.id)
+        .first()
+    )
+    if claimed is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="tenant_id already bound to another device.",
+        )
+    if device.tenant_id is None:
+        device.tenant_id = tenant_id
+        try:
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="tenant_id already bound to another device.",
+            )
+
+
 @router.post(
     "/authorize/",
     operation_id="auth_device_authorize_create",
@@ -44,11 +89,13 @@ def _forward(response) -> Response:
         429: {"description": "Too many authorization attempts"},
     },
 )
-def authorize_device(payload: DeviceAuthorizeRequest):
+def authorize_device(payload: DeviceAuthorizeRequest, db: Session = Depends(get_db)):
     try:
         response = SSOClient().authorize(payload.model_dump(mode="json", exclude_none=True))
     except SSOError as exc:
         raise HTTPException(status_code=exc.status_code or status.HTTP_502_BAD_GATEWAY, detail=exc.message)
+    if 200 <= response.status_code < 300:
+        _bind_tenant_on_authorize(db, str(payload.tenant_id))
     return _forward(response)
 
 

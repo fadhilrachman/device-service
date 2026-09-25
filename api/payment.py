@@ -48,25 +48,23 @@ def _resolve_amount(db: Session, campaign_id: str | None, amount: float | None) 
 
 @router.post("", response_model=PaymentCreateResponse, status_code=status.HTTP_201_CREATED)
 def create_payment(payload: PaymentCreate, request: Request, db: Session = Depends(get_db)):
-    device_id = payload.device_id or resolve_device_id()
+    device_id = resolve_device_id()
     if not db.get(Device, device_id):
         raise HTTPException(status_code=404, detail="Device not found.")
 
-    # Explicit kiosk values win; the rest is derived from the active assignment
-    # so the kiosk only needs to send {"method": ...} in the common case.
-    booth_id = payload.booth_id
-    if booth_id is None:
-        assignment = _active_assignment(db, device_id)
-        booth_id = assignment.booth_id if assignment else None
-    if booth_id is None:
-        raise HTTPException(
-            status_code=400,
-            detail="Device is not assigned to any booth; booth_id is required.",
-        )
-    booth = db.get(Booth, booth_id)
-    if booth is None:
-        raise HTTPException(status_code=404, detail="Booth not found.")
-    campaign_id = payload.campaign_id or booth.campaign_id
+    # Device, booth, and campaign always come from the server side: the
+    # device's active assignment. The kiosk never sends IDs.
+    assignment = _active_assignment(db, device_id)
+    # if assignment is None:
+    #     raise HTTPException(
+    #         status_code=400,
+    #         detail="Device is not assigned to any booth.",
+    #     )
+    booth = db.get(Booth, assignment.booth_id)
+    # if booth is None:
+    #     raise HTTPException(status_code=404, detail="Booth not found.")
+    booth_id = booth.id
+    campaign_id = booth.campaign_id
 
     offline = not engine.is_online()
     gateway = get_gateway()

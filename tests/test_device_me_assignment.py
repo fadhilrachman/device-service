@@ -22,7 +22,6 @@ from lib.time import wib_now  # noqa: E402
 from main import app  # noqa: E402
 from models.booth import Booth  # noqa: E402
 from models.campaign import Campaign  # noqa: E402
-from models.device import Device  # noqa: E402
 from models.device_assignment import DeviceAssignment  # noqa: E402
 
 import base64  # noqa: E402
@@ -70,10 +69,6 @@ with TestClient(app, headers=AUTH_HEADERS) as client:
             )
         )
         db.add(
-            Booth(id="booth-2", name="Booth Tanpa Kampanye", status="active")
-        )
-        db.add(Campaign(id="camp-2", name="Paket Override", price=75000, status="active"))
-        db.add(
             DeviceAssignment(
                 booth_id="booth-1",
                 device_id="dev-assigned-1",
@@ -81,8 +76,6 @@ with TestClient(app, headers=AUTH_HEADERS) as client:
                 assigned_from=wib_now(),
             )
         )
-        # Second device with no assignment at all.
-        db.add(Device(id="dev-lonely-1", device_code="TEST-LONELY-01", name="Lonely"))
         db.commit()
 
     # ---- nested booth + campaign in /devices/me -------------------------
@@ -123,42 +116,31 @@ with TestClient(app, headers=AUTH_HEADERS) as client:
     assert payment["provider"] == "stub"
     ok("POST /payments minimal payload derives device/booth/campaign/amount")
 
-    # ---- explicit booth override wins ------------------------------------
+    # ---- stale IDs in payload are rejected loudly (422), not ignored -----
     r = client.post(
         "/payments",
-        json={"booth_id": "booth-2", "amount": 10000, "method": "cash"},
+        json={"booth_id": "booth-1", "campaign_id": "camp-1", "method": "cash"},
     )
-    assert r.status_code == 201, r.text
-    payment = r.json()["payment"]
-    assert payment["booth_id"] == "booth-2", payment
-    assert payment["campaign_id"] is None, payment
-    assert float(payment["amount"]) == 10000.0, payment
-    ok("POST /payments explicit booth_id overrides assignment")
+    assert r.status_code == 422, r.text
+    r = client.post("/payments", json={"device_id": "dev-assigned-1", "method": "cash"})
+    assert r.status_code == 422, r.text
+    ok("POST /payments rejects ID fields with 422 (extra=forbid)")
 
-    # ---- explicit campaign override wins ---------------------------------
-    r = client.post("/payments", json={"campaign_id": "camp-2", "method": "cash"})
-    assert r.status_code == 201, r.text
-    payment = r.json()["payment"]
-    assert payment["booth_id"] == "booth-1", payment
-    assert payment["campaign_id"] == "camp-2", payment
-    assert float(payment["amount"]) == 75000.0, payment
-    ok("POST /payments explicit campaign_id overrides booth campaign")
-
-    # ---- device without assignment and without booth_id -> 400 -----------
-    r = client.post(
-        "/payments",
-        json={"device_id": "dev-lonely-1", "amount": 5000, "method": "cash"},
-    )
+    # ---- deactivated assignment -> 400 ------------------------------------
+    with local_session() as db:
+        row = (
+            db.query(DeviceAssignment)
+            .filter(
+                DeviceAssignment.device_id == "dev-assigned-1",
+                DeviceAssignment.status == "active",
+            )
+            .first()
+        )
+        row.status = "inactive"
+        db.commit()
+    r = client.post("/payments", json={"method": "cash"})
     assert r.status_code == 400, r.text
     assert "not assigned" in r.json()["detail"], r.text
-    ok("POST /payments unassigned device without booth_id -> 400")
-
-    # ---- unknown explicit booth still 404 --------------------------------
-    r = client.post(
-        "/payments",
-        json={"booth_id": "does-not-exist", "amount": 5000},
-    )
-    assert r.status_code == 404, r.text
-    ok("POST /payments unknown booth_id -> 404")
+    ok("POST /payments without active assignment -> 400")
 
 print(f"\nALL {PASS} assignment tests passed ({_TMPDIR})")

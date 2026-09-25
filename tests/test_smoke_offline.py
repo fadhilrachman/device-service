@@ -224,7 +224,7 @@ with TestClient(app, headers=AUTH_HEADERS) as client:
 
     r = client.post(
         "/payments",
-        json={"session_id": sid, "device_id": device_id, "amount": 50000, "method": "QRIS"},
+        json={"session_id": sid, "amount": 50000, "method": "QRIS"},
     )
     assert r.status_code == 201, r.text
     payment = r.json()["payment"]

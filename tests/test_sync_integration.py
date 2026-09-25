@@ -229,9 +229,6 @@ def main() -> None:
             "/payments",
             json={
                 "session_id": session_id,
-                "campaign_id": SEED["campaign"],
-                "booth_id": SEED["booth"],
-                "device_id": DEVICE_ID,
                 "amount": 45000,
                 "method": "QRIS",
             },

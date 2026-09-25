@@ -3,16 +3,11 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class PaymentCreate(BaseModel):
+    # Strict contract: device/booth/campaign come from the device's active
+    # assignment server-side. Stale kiosk clients still sending IDs fail
+    # loudly (422) instead of being silently ignored.
+    model_config = ConfigDict(extra="forbid")
     session_id: Optional[str] = None
-    booth_id: Optional[str] = Field(
-        default=None, description="Defaults to the device's active assignment booth."
-    )
-    campaign_id: Optional[str] = Field(
-        default=None, description="Defaults to the booth's campaign."
-    )
-    device_id: Optional[str] = Field(
-        default=None, description="Defaults to the calling device."
-    )
     amount: Optional[float] = Field(
         default=None, description="Defaults to the campaign price."
     )

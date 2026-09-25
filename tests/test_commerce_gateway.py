@@ -270,10 +270,8 @@ with TestClient(app, headers=ORG_HEADERS) as tclient:
     ROUTES.update(_happy_routes())
 
     # create -> 3 Commerce calls, local row persisted with commerce data
-    r = tclient.post(
-        "/payments",
-        json={"device_id": device_id, "campaign_id": "camp-1", "method": "QRIS"},
-    )
+    # (device/booth/campaign all derived from the active assignment)
+    r = tclient.post("/payments", json={"method": "QRIS"})
     assert r.status_code == 201, r.text
     body = r.json()
     payment = body["payment"]
@@ -319,10 +317,7 @@ with TestClient(app, headers=ORG_HEADERS) as tclient:
     # cancel a second pending payment (fresh invoice number per order)
     ROUTES.clear()
     ROUTES.update(_happy_routes(n="2"))
-    r = tclient.post(
-        "/payments",
-        json={"device_id": device_id, "campaign_id": "camp-1", "amount": 25000},
-    )
+    r = tclient.post("/payments", json={"amount": 25000})
     assert r.status_code == 201, r.text
     pid2 = r.json()["payment"]["id"]
     r = tclient.post(f"/payments/{pid2}/cancel")
@@ -331,42 +326,51 @@ with TestClient(app, headers=ORG_HEADERS) as tclient:
     assert r.json()["gateway_payload"]["cancelled_locally"] is True, r.text
     ok("POST /payments/{id}/cancel (pending -> failed)")
 
-    # campaign exists locally but has no Commerce mapping -> 400, nothing persisted
+    # booth campaign has no Commerce mapping -> 400, nothing persisted.
+    # (repoint the assignment temporarily, then restore it)
     with local_session() as db:
         db.add(Campaign(id="camp-9", name="Unmapped Campaign", price=10000))
+        db.add(Booth(id="booth-9", name="Unmapped Booth", status="active", campaign_id="camp-9"))
+        row = (
+            db.query(DeviceAssignment)
+            .filter(
+                DeviceAssignment.device_id == device_id,
+                DeviceAssignment.status == "active",
+            )
+            .first()
+        )
+        row.booth_id = "booth-9"
         db.commit()
-    r = tclient.post(
-        "/payments",
-        json={"device_id": device_id, "campaign_id": "camp-9", "amount": 10000},
-    )
+    r = tclient.post("/payments", json={"method": "cash"})
     assert r.status_code == 400 and "COMMERCE_OFFERS_JSON" in r.json()["detail"], r.text
     ok("POST /payments unmapped campaign -> 400")
+    with local_session() as db:
+        row = (
+            db.query(DeviceAssignment)
+            .filter(
+                DeviceAssignment.device_id == device_id,
+                DeviceAssignment.status == "active",
+            )
+            .first()
+        )
+        row.booth_id = "booth-1"
+        db.commit()
 
     # token without org claim -> 400
     no_org = {"Authorization": f"Bearer {_make_token()}"}
-    r = tclient.post(
-        "/payments",
-        json={"device_id": device_id, "campaign_id": "camp-1", "amount": 10000},
-        headers=no_org,
-    )
+    r = tclient.post("/payments", json={"amount": 10000}, headers=no_org)
     assert r.status_code == 400 and "organization_id" in r.json()["detail"], r.text
     ok("POST /payments without org claim -> 400")
 
     # Commerce 400 (catalog mismatch) surfaces as 400, not 500
     ROUTES.update({("POST", "/orders/"): (400, {"detail": "plan does not belong to product"})})
-    r = tclient.post(
-        "/payments",
-        json={"device_id": device_id, "campaign_id": "camp-1", "amount": 10000},
-    )
+    r = tclient.post("/payments", json={"amount": 10000})
     assert r.status_code == 400 and "Commerce rejected" in r.json()["detail"], r.text
     ok("Commerce 400 surfaces as 400 with detail")
 
     # stub provider untouched: refresh/cancel reject non-commerce rows
     os.environ["PAYMENT_PROVIDER"] = "stub"
-    r = tclient.post(
-        "/payments",
-        json={"device_id": device_id, "amount": 1000, "method": "cash"},
-    )
+    r = tclient.post("/payments", json={"amount": 1000, "method": "cash"})
     assert r.status_code == 201, r.text
     stub_id = r.json()["payment"]["id"]
     assert r.json()["payment"]["provider"] == "stub"
@@ -383,10 +387,7 @@ with TestClient(app, headers=ORG_HEADERS) as tclient:
     r = tclient.get("/devices/me")
     device_id = r.json()["id"]
     ROUTES.clear()  # any Commerce call would raise AssertionError
-    r = tclient.post(
-        "/payments",
-        json={"device_id": device_id, "campaign_id": "camp-1", "amount": 50000},
-    )
+    r = tclient.post("/payments", json={"amount": 50000})
     assert r.status_code == 503, r.text
     ok("POST /payments (commerce, offline -> 503, no Commerce call)")
 

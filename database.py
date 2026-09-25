@@ -16,6 +16,11 @@ LOCAL_ONLY_TABLES = {"sync_outbox", "sync_markers"}
 # create_all). Ordered: (table, column, ddl) -- ddl must match the model type.
 ADDITIVE_COLUMNS = [
     (
+        "devices",
+        "tenant_id",
+        "VARCHAR(36)",
+    ),
+    (
         "sessions",
         "frame_template_id",
         "VARCHAR(36)",
@@ -95,6 +100,15 @@ def _additive_migrate_local() -> None:
             if has_column:
                 continue
             conn.execute(text(f'ALTER TABLE "{table_name}" ADD COLUMN "{column}" {ddl}'))
+        # SQLite ALTER TABLE does not create indexes: UNIQUE tenant_id must allow
+        # multiple NULLs (satisfies optional & unique on both SQLite and Postgres).
+        conn.execute(
+            text(
+                'CREATE UNIQUE INDEX IF NOT EXISTS "ix_devices_tenant_id"'
+                ' ON "devices" ("tenant_id")'
+            )
+        )
+        conn.commit()
 
 
 def _data_migrate_local() -> None:

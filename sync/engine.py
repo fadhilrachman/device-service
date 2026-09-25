@@ -67,6 +67,7 @@ FK_REFS = {
 
 # Fields on the Device row owned by the device itself (heartbeat / health).
 DEVICE_PUSH_FIELDS = {
+    "tenant_id",
     "last_seen_at",
     "last_heartbeat",
     "connectivity",
@@ -175,8 +176,8 @@ class SyncEngine:
             return
         table = Device.__table__
         data = self._orm_row_to_dict(dev)
-        # The device only reports its identity + health. Everything else
-        # (camera_profile_id, printer_profile_id, name, status, ...) belongs to
+        # The device only reports its identity + tenant binding + health. Everything
+        # else (camera_profile_id, printer_profile_id, name, status, ...) belongs to
         # the admin panel and must never be overwritten from a device.
         push_cols = {"id", "device_code", "app_version"}.union(DEVICE_PUSH_FIELDS)
         subset = {k: v for k, v in data.items() if k in push_cols}

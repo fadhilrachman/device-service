@@ -9,6 +9,7 @@ class Device(Base):
     __tablename__ = "devices"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     device_code: Mapped[str] = mapped_column(String(100), unique=True, index=True)
+    tenant_id: Mapped[str | None] = mapped_column(String(36), nullable=True, unique=True, index=True)
     name: Mapped[str | None] = mapped_column(String(160), nullable=True)
     serial_number: Mapped[str | None] = mapped_column(String(100), nullable=True)
     status: Mapped[str] = mapped_column(String(40), default='active', index=True)

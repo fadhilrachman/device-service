@@ -21,6 +21,7 @@ def voucher_status_wins(local_status: str | None, remote_status: str | None) -> 
 def device_fields_for_push(column_name: str) -> bool:
     """True when a Device column is owned by the device itself (pushed, not overwritten)."""
     return column_name in {
+        "tenant_id",
         "last_seen_at",
         "last_heartbeat",
         "connectivity",

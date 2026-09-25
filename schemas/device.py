@@ -29,6 +29,7 @@ class DeviceResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: str
     device_code: str
+    tenant_id: Optional[str] = None
     name: Optional[str] = None
     serial_number: Optional[str] = None
     status: str
