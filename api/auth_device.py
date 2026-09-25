@@ -43,9 +43,11 @@ def _bind_tenant_on_authorize(db: Session, tenant_id: str, sso_device_code: str)
 
     First-install registration writes straight to Neon (never SQLite): the row
     must already exist (pre-registered with the DEVICE_ID from env), otherwise
-    404. tenant_id stays optional (NULL until first authorize) & unique.
-    Check-before-write: every 404/409 rejection happens before any mutation,
-    so a rejected authorize never rotates the stored device_code_sso.
+    404. Authorize is one-time per device: any already-bound device is rejected
+    with 409 (resume polling via POST /auth/device/token instead). tenant_id
+    stays optional (NULL until first authorize) & unique. Check-before-write:
+    every 404/409 rejection happens before any mutation, so a rejected
+    authorize never rotates the stored device_code_sso.
     """
     device_id = resolve_device_id()
     device = db.get(Device, device_id)
@@ -54,11 +56,15 @@ def _bind_tenant_on_authorize(db: Session, tenant_id: str, sso_device_code: str)
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Device {device_id} is not registered. Pre-register it before authorize.",
         )
-    if device.tenant_id is not None and device.tenant_id != tenant_id:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Device already bound to a tenant.",
-        )
+    if device.tenant_id is not None:
+        if device.tenant_id == tenant_id:
+            detail = (
+                "Device already authorized. Resume polling via "
+                "POST /auth/device/token with the stored device_code."
+            )
+        else:
+            detail = "Device already bound to a tenant."
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=detail)
     claimed = (
         db.query(Device)
         .filter(Device.tenant_id == tenant_id, Device.id != device.id)
@@ -71,7 +77,8 @@ def _bind_tenant_on_authorize(db: Session, tenant_id: str, sso_device_code: str)
         )
     if device.tenant_id is None:
         device.tenant_id = tenant_id
-    # Always store the latest grant: re-authorize rotates the SSO device_code.
+    # First and only grant write: re-authorize is rejected above, so the stored
+    # device_code never rotates. Resume polling via POST /auth/device/token.
     device.device_code_sso = sso_device_code
     try:
         db.commit()
@@ -83,6 +90,35 @@ def _bind_tenant_on_authorize(db: Session, tenant_id: str, sso_device_code: str)
         )
 
 
+def _precheck_authorize_not_bound() -> None:
+    """Fast reject before hitting SSO: an already-bound device must not create
+    another SSO grant. Uses its own short session (never held across SSO I/O).
+    Raises 404/409/503; returns None when the device may proceed to SSO.
+    """
+    device_id = resolve_device_id()
+    try:
+        with remote_session() as db:
+            device = db.get(Device, device_id)
+    except SQLAlchemyError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Device registry (Neon) is unreachable. Retry when online.",
+        )
+    if device is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Device {device_id} is not registered. Pre-register it before authorize.",
+        )
+    if device.tenant_id is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Device already authorized. Resume polling via "
+                "POST /auth/device/token with the stored device_code."
+            ),
+        )
+
+
 @router.post(
     "/authorize/",
     operation_id="auth_device_authorize_create",
@@ -91,10 +127,15 @@ def _bind_tenant_on_authorize(db: Session, tenant_id: str, sso_device_code: str)
     response_model=DeviceAuthorizeResponse,
     responses={
         400: {"description": "Missing/invalid fields or audience not allowed"},
+        404: {"description": "Device id is not pre-registered in the registry"},
+        409: {"description": "Device already authorized, or tenant bound to another device"},
         429: {"description": "Too many authorization attempts"},
     },
 )
 def authorize_device(payload: DeviceAuthorizeRequest):
+    # One-time authorize: reject bound devices BEFORE creating an SSO grant,
+    # then re-check after SSO to close the concurrent-authorize race.
+    _precheck_authorize_not_bound()
     try:
         response = SSOClient().authorize(payload.model_dump(mode="json", exclude_none=True))
     except SSOError as exc:
