@@ -17,6 +17,11 @@ LOCAL_ONLY_TABLES = {"sync_outbox", "sync_markers"}
 ADDITIVE_COLUMNS = [
     (
         "devices",
+        "device_code_sso",
+        "VARCHAR(255)",
+    ),
+    (
+        "devices",
         "tenant_id",
         "VARCHAR(36)",
     ),
@@ -100,14 +105,18 @@ def _additive_migrate_local() -> None:
             if has_column:
                 continue
             conn.execute(text(f'ALTER TABLE "{table_name}" ADD COLUMN "{column}" {ddl}'))
-        # SQLite ALTER TABLE does not create indexes: UNIQUE tenant_id must allow
-        # multiple NULLs (satisfies optional & unique on both SQLite and Postgres).
-        conn.execute(
-            text(
-                'CREATE UNIQUE INDEX IF NOT EXISTS "ix_devices_tenant_id"'
-                ' ON "devices" ("tenant_id")'
+        # SQLite ALTER TABLE does not create indexes: UNIQUE nullable columns must
+        # allow multiple NULLs (satisfies optional & unique on SQLite and Postgres).
+        for index_name, column in (
+            ("ix_devices_tenant_id", "tenant_id"),
+            ("ix_devices_device_code_sso", "device_code_sso"),
+        ):
+            conn.execute(
+                text(
+                    f'CREATE UNIQUE INDEX IF NOT EXISTS "{index_name}"'
+                    f' ON "devices" ("{column}")'
+                )
             )
-        )
         conn.commit()
 
 

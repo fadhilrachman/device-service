@@ -181,11 +181,18 @@ class SyncEngine:
         # the admin panel and must never be overwritten from a device.
         push_cols = {"id", "device_code", "app_version"}.union(DEVICE_PUSH_FIELDS)
         subset = {k: v for k, v in data.items() if k in push_cols}
+        # A local NULL means "unknown", never "delete the server value": without
+        # this, a device that authorized straight to Neon (SQLite still NULL)
+        # would wipe the Neon values on the next sync.
+        updatable = {k: v for k, v in subset.items() if k != "id" and v is not None}
         stmt = pg_insert(table).values(**subset)
-        stmt = stmt.on_conflict_do_update(
-            index_elements=[table.c.id],
-            set_={k: getattr(stmt.excluded, k) for k in subset if k != "id"},
-        )
+        if not updatable:
+            stmt = stmt.on_conflict_do_nothing(index_elements=[table.c.id])
+        else:
+            stmt = stmt.on_conflict_do_update(
+                index_elements=[table.c.id],
+                set_={k: getattr(stmt.excluded, k) for k in updatable},
+            )
         remote.execute(stmt)
         remote.commit()
 

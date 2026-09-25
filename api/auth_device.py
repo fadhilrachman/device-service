@@ -1,10 +1,10 @@
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, HTTPException, Request, status
 from fastapi.responses import JSONResponse, Response
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from config import resolve_device_id
-from database import get_db
+from database import remote_session
 from lib.sso import SSOClient, SSOError
 from models.device import Device
 from schemas.auth_device import (
@@ -38,19 +38,22 @@ def _forward(response) -> Response:
     return JSONResponse(status_code=response.status_code, content=body)
 
 
-def _bind_tenant_on_authorize(db: Session, tenant_id: str) -> None:
-    """Persist tenant_id on the local singleton device after SSO authorize succeeds.
+def _bind_tenant_on_authorize(db: Session, tenant_id: str, sso_device_code: str) -> None:
+    """Persist tenant_id + device_code_sso on the pre-registered Neon device row.
 
-    Rules: tenant_id is optional (NULL until first authorize) & unique. A device
-    already bound to a different tenant, or a tenant already bound to another
-    device, is rejected with 409.
+    First-install registration writes straight to Neon (never SQLite): the row
+    must already exist (pre-registered with the DEVICE_ID from env), otherwise
+    404. tenant_id stays optional (NULL until first authorize) & unique.
+    Check-before-write: every 404/409 rejection happens before any mutation,
+    so a rejected authorize never rotates the stored device_code_sso.
     """
-    from sync import engine as sync_engine
-
     device_id = resolve_device_id()
     device = db.get(Device, device_id)
     if device is None:
-        device = sync_engine.ensure_local_device(db)
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Device {device_id} is not registered. Pre-register it before authorize.",
+        )
     if device.tenant_id is not None and device.tenant_id != tenant_id:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -68,14 +71,16 @@ def _bind_tenant_on_authorize(db: Session, tenant_id: str) -> None:
         )
     if device.tenant_id is None:
         device.tenant_id = tenant_id
-        try:
-            db.commit()
-        except IntegrityError:
-            db.rollback()
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="tenant_id already bound to another device.",
-            )
+    # Always store the latest grant: re-authorize rotates the SSO device_code.
+    device.device_code_sso = sso_device_code
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="tenant_id already bound to another device.",
+        )
 
 
 @router.post(
@@ -89,13 +94,36 @@ def _bind_tenant_on_authorize(db: Session, tenant_id: str) -> None:
         429: {"description": "Too many authorization attempts"},
     },
 )
-def authorize_device(payload: DeviceAuthorizeRequest, db: Session = Depends(get_db)):
+def authorize_device(payload: DeviceAuthorizeRequest):
     try:
         response = SSOClient().authorize(payload.model_dump(mode="json", exclude_none=True))
     except SSOError as exc:
         raise HTTPException(status_code=exc.status_code or status.HTTP_502_BAD_GATEWAY, detail=exc.message)
-    if 200 <= response.status_code < 300:
-        _bind_tenant_on_authorize(db, str(payload.tenant_id))
+    if not 200 <= response.status_code < 300:
+        return _forward(response)
+    try:
+        sso_body = response.json()
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="SSO authorize returned an unreadable response.",
+        )
+    sso_device_code = sso_body.get("device_code") if isinstance(sso_body, dict) else None
+    if not sso_device_code:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="SSO authorize response is missing device_code.",
+        )
+    try:
+        with remote_session() as db:
+            _bind_tenant_on_authorize(db, str(payload.tenant_id), sso_device_code)
+    except HTTPException:
+        raise
+    except SQLAlchemyError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Device registry (Neon) is unreachable. Retry when online.",
+        )
     return _forward(response)
 
 
