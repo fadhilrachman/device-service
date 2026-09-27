@@ -90,6 +90,7 @@ class CommerceGateway(PaymentGateway):
             COMMERCE_PAYER_EMAIL,
             COMMERCE_SUCCESS_URL,
             COMMERCE_TIMEOUT_SECONDS,
+            PAYMENT_PRODUCT_ID,
             get_commerce_offers,
         )
 
@@ -103,15 +104,37 @@ class CommerceGateway(PaymentGateway):
                 "Commerce charge requires organization_id in context "
                 "(decoded from the access token)."
             )
-        offers = context.get("offers")
-        if offers is None:
-            offers = get_commerce_offers()
+        # New path: plan/price ids synced onto the campaign row
+        # (api/payment passes them via context; tests may pass offer directly).
         campaign_key = payment.campaign_id or ""
-        offer = offers.get(campaign_key)
+        offer = context.get("offer")
+        if offer is None:
+            plan_id = context.get("payment_plan_id") or getattr(
+                payment, "payment_plan_id", None
+            )
+            price_id = context.get("payment_price_id") or getattr(
+                payment, "payment_price_id", None
+            )
+            if plan_id and price_id:
+                offer = {
+                    "product": context.get("payment_product_id") or PAYMENT_PRODUCT_ID,
+                    "plan": plan_id,
+                    "price": price_id,
+                }
+        if offer is None:
+            legacy_offers = context.get("offers")
+            if legacy_offers is None:
+                try:
+                    legacy_offers = get_commerce_offers()
+                except ValueError as exc:
+                    # Misconfigured env must surface as 400 (via _provider_http_error),
+                    # never as an opaque 500 from the generic handler.
+                    raise GatewayError(f"COMMERCE_OFFERS_JSON invalid: {exc}")
+            offer = legacy_offers.get(campaign_key)
         if not offer:
             raise GatewayError(
-                f"Campaign '{campaign_key}' is not mapped to a Commerce offer "
-                "(COMMERCE_OFFERS_JSON)."
+                f"Campaign '{campaign_key}' is not mapped to a Payment offer "
+                "(payment_plan_id/payment_price_id missing; sync the campaign)."
             )
         for key in ("product", "plan", "price"):
             if not offer.get(key):

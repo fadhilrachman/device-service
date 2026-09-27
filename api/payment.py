@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from config import (
     COMMERCE_BASE_URL,
     COMMERCE_TIMEOUT_SECONDS,
+    get_commerce_offers,
     resolve_device_id,
 )
 from api.device import _active_assignment
@@ -55,14 +56,14 @@ def create_payment(payload: PaymentCreate, request: Request, db: Session = Depen
     # Device, booth, and campaign always come from the server side: the
     # device's active assignment. The kiosk never sends IDs.
     assignment = _active_assignment(db, device_id)
-    # if assignment is None:
-    #     raise HTTPException(
-    #         status_code=400,
-    #         detail="Device is not assigned to any booth.",
-    #     )
+    if assignment is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Device is not assigned to any booth.",
+        )
     booth = db.get(Booth, assignment.booth_id)
-    # if booth is None:
-    #     raise HTTPException(status_code=404, detail="Booth not found.")
+    if booth is None:
+        raise HTTPException(status_code=404, detail="Booth not found.")
     booth_id = booth.id
     campaign_id = booth.campaign_id
 
@@ -77,6 +78,26 @@ def create_payment(payload: PaymentCreate, request: Request, db: Session = Depen
                 detail="Commerce payment requires an online connection.",
             )
         context = _commerce_context(request)
+        # Attach the synced payment plan/price ids from this device's campaign.
+        # Devices without an assignment or without synced ids cannot pay.
+        # Legacy COMMERCE_OFFERS_JSON mapping is honored as a transition
+        # fallback so existing env-based setups keep working until backfilled.
+        campaign = db.get(Campaign, campaign_id) if campaign_id else None
+        if campaign is not None:
+            context["payment_plan_id"] = getattr(campaign, "payment_plan_id", None)
+            context["payment_price_id"] = getattr(campaign, "payment_price_id", None)
+        if not context.get("payment_plan_id") or not context.get("payment_price_id"):
+            try:
+                legacy_offers = get_commerce_offers()
+            except ValueError:
+                legacy_offers = {}
+            if not legacy_offers.get(campaign_id or ""):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Campaign '{campaign_id}' is not mapped to a Payment offer "
+                    "(payment_plan_id/payment_price_id missing; sync the campaign "
+                    "or add COMMERCE_OFFERS_JSON).",
+                )
 
     db_obj = Payment(
         session_id=payload.session_id,

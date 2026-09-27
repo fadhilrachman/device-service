@@ -15,6 +15,8 @@ class CampaignResponse(BaseModel):
     frame_set: object = None
     print_policy: object = None
     delivery_policy: object = None
+    payment_plan_id: Optional[str] = None
+    payment_price_id: Optional[str] = None
 
 
 class BoothResponse(BaseModel):

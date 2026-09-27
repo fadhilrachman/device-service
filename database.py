@@ -40,6 +40,16 @@ ADDITIVE_COLUMNS = [
         "frame_template_name",
         "TEXT",
     ),
+    (
+        "campaigns",
+        "payment_plan_id",
+        "VARCHAR(36)",
+    ),
+    (
+        "campaigns",
+        "payment_price_id",
+        "VARCHAR(36)",
+    ),
 ]
 
 local_engine = create_engine(

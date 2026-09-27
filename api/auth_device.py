@@ -56,15 +56,15 @@ def _bind_tenant_on_authorize(db: Session, tenant_id: str, sso_device_code: str)
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Device {device_id} is not registered. Pre-register it before authorize.",
         )
-    if device.tenant_id is not None:
-        if device.tenant_id == tenant_id:
-            detail = (
-                "Device already authorized. Resume polling via "
-                "POST /auth/device/token with the stored device_code."
-            )
-        else:
-            detail = "Device already bound to a tenant."
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=detail)
+    # if device.tenant_id is not None:
+    #     if device.tenant_id == tenant_id:
+    #         detail = (
+    #             "Device already authorized. Resume polling via "
+    #             "POST /auth/device/token with the stored device_code."
+    #         )
+    #     else:
+    #         detail = "Device already bound to a tenant."
+    #     raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=detail)
     claimed = (
         db.query(Device)
         .filter(Device.tenant_id == tenant_id, Device.id != device.id)

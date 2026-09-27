@@ -14,6 +14,8 @@ class Campaign(Base):
     name: Mapped[str] = mapped_column(String(200))
     status: Mapped[str] = mapped_column(String(40), default='draft', index=True)
     price: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
+    payment_plan_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    payment_price_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     session_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)
     active_from: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     active_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
