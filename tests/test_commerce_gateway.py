@@ -6,15 +6,12 @@ import os
 import sys
 import tempfile
 import time
+from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 _TMPDIR = tempfile.mkdtemp(prefix="devicesvc_commerce_")
-os.environ["REMOTE_DATABASE_URL"] = "postgresql://invalid:invalid@localhost:1/offline"
-os.environ["LOCAL_DB_PATH"] = os.path.join(_TMPDIR, "device.db")
-os.environ["DEVICE_CODE"] = "TEST-COMMERCE-01"
-os.environ["DEVICE_NAME"] = "Test Commerce Device"
-os.environ["SYNC_ON_STARTUP"] = "false"
+os.environ["REMOTE_DATABASE_URL"] = f"sqlite:///{os.path.join(_TMPDIR, 'device.db')}"
 os.environ["SSO_BASE_URL"] = "http://127.0.0.1:1"
 os.environ["COMMERCE_PAYER_EMAIL"] = "kiosk@example.com"
 os.environ["COMMERCE_OFFERS_JSON"] = json.dumps(
@@ -32,7 +29,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 import api.payment as payment_api  # noqa: E402
 import lib.payment_gateway as gateway_mod  # noqa: E402
-from database import local_session  # noqa: E402
+from database import remote_session  # noqa: E402
 from lib.commerce import (  # noqa: E402
     CommerceClient,
     CommerceError,
@@ -46,8 +43,8 @@ from main import app  # noqa: E402
 from lib.time import wib_now  # noqa: E402
 from models.booth import Booth  # noqa: E402
 from models.campaign import Campaign  # noqa: E402
+from models.device import Device  # noqa: E402
 from models.device_assignment import DeviceAssignment  # noqa: E402
-from sync import engine  # noqa: E402
 
 PASS = 0
 
@@ -70,7 +67,7 @@ def _make_token(payload_extra: dict | None = None) -> str:
 
 
 ORG_HEADERS = {
-    "Authorization": f"Bearer {_make_token({'org_id': 'org-111', 'tenant_id': 'ten-222'})}"
+    "Authorization": f"Bearer {_make_token({'org_id': 'org-111', 'tenant_id': 'ten-222', 'device_id': 'dev-commerce-1'})}"
 }
 
 # ---- fake Commerce HTTP -------------------------------------------------
@@ -238,15 +235,24 @@ ok("start_checkout raises when checkout URL is missing")
 
 # ---- api: commerce provider ----------------------------------------------
 os.environ["PAYMENT_PROVIDER"] = "commerce"
-_real_is_online = engine.is_online
-engine.is_online = lambda force=False: True  # simulate online kiosk
 
 with TestClient(app, headers=ORG_HEADERS) as tclient:
+    with remote_session() as db:
+        db.add(
+            Device(
+                id="dev-commerce-1",
+                device_code="TEST-COMMERCE-01",
+                name="Test Commerce Device",
+                status="active",
+            )
+        )
+        db.commit()
+
     r = tclient.get("/devices/me")
     assert r.status_code == 200
     device_id = r.json()["id"]
 
-    with local_session() as db:
+    with remote_session() as db:
         db.add(Campaign(id="camp-1", name="Test Campaign", price=50000))
         db.add(
             Booth(
@@ -262,6 +268,7 @@ with TestClient(app, headers=ORG_HEADERS) as tclient:
                 device_id=device_id,
                 status="active",
                 assigned_from=wib_now(),
+                assigned_until=datetime(2030, 1, 1),
             )
         )
         db.commit()
@@ -328,7 +335,7 @@ with TestClient(app, headers=ORG_HEADERS) as tclient:
 
     # booth campaign has no Commerce mapping -> 400, nothing persisted.
     # (repoint the assignment temporarily, then restore it)
-    with local_session() as db:
+    with remote_session() as db:
         db.add(Campaign(id="camp-9", name="Unmapped Campaign", price=10000))
         db.add(Booth(id="booth-9", name="Unmapped Booth", status="active", campaign_id="camp-9"))
         row = (
@@ -344,7 +351,7 @@ with TestClient(app, headers=ORG_HEADERS) as tclient:
     r = tclient.post("/payments", json={"method": "cash"})
     assert r.status_code == 400 and "COMMERCE_OFFERS_JSON" in r.json()["detail"], r.text
     ok("POST /payments unmapped campaign -> 400")
-    with local_session() as db:
+    with remote_session() as db:
         row = (
             db.query(DeviceAssignment)
             .filter(
@@ -356,8 +363,8 @@ with TestClient(app, headers=ORG_HEADERS) as tclient:
         row.booth_id = "booth-1"
         db.commit()
 
-    # token without org claim -> 400
-    no_org = {"Authorization": f"Bearer {_make_token()}"}
+    # token without org claim -> 400 (device_id present so identity passes)
+    no_org = {"Authorization": f"Bearer {_make_token({'device_id': 'dev-commerce-1'})}"}
     r = tclient.post("/payments", json={"amount": 10000}, headers=no_org)
     assert r.status_code == 400 and "organization_id" in r.json()["detail"], r.text
     ok("POST /payments without org claim -> 400")
@@ -380,19 +387,7 @@ with TestClient(app, headers=ORG_HEADERS) as tclient:
     assert r.status_code == 400, r.text
     ok("refresh/cancel reject non-commerce payments (400)")
 
-# offline kiosk + commerce provider -> 503 before any Commerce call
-engine.is_online = lambda force=False: False
-os.environ["PAYMENT_PROVIDER"] = "commerce"
-with TestClient(app, headers=ORG_HEADERS) as tclient:
-    r = tclient.get("/devices/me")
-    device_id = r.json()["id"]
-    ROUTES.clear()  # any Commerce call would raise AssertionError
-    r = tclient.post("/payments", json={"amount": 50000})
-    assert r.status_code == 503, r.text
-    ok("POST /payments (commerce, offline -> 503, no Commerce call)")
-
 # restore process-global patches (other test modules share the interpreter)
-engine.is_online = _real_is_online
 gateway_mod.CommerceClient = _REAL_GATEWAY_CLIENT
 payment_api.CommerceClient = _REAL_API_CLIENT
 del os.environ["PAYMENT_PROVIDER"]

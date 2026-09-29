@@ -16,6 +16,7 @@ Run from the project root:  python scripts/seed_uhuy.py
 
 import sys
 import uuid
+from datetime import datetime
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parents[1]
@@ -183,6 +184,9 @@ def seed_all() -> dict:
                 "device_id": DEVICE_ID,
                 "status": "active",
                 "assigned_from": wib_now(),
+                # Validity window is mandatory: NULL bounds are treated as
+                # invalid, so the device would lose its assignment.
+                "assigned_until": datetime(2030, 1, 1),
             },
         )
 

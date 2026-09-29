@@ -1,21 +1,19 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
-from config import resolve_device_id
 from database import get_db
+from lib.device_assignment import get_valid_assignment
+from lib.device_identity import require_request_device_id
 from models.booth import Booth
 from models.campaign import Campaign
 from models.camera_profile import CameraProfile
 from models.device import Device
-from models.device_assignment import DeviceAssignment
 from models.frame_template import FrameTemplate
 from models.frame_template import PublishState
 from models.printer_profile import PrinterProfile
 from models.voucher import Voucher
 from models.voucher_batch import VoucherBatch
 from schemas.config import (
-    AssignmentResponse,
-    BoothResponse,
     CameraProfileResponse,
     CampaignResponse,
     DeviceConfigResponse,
@@ -23,31 +21,19 @@ from schemas.config import (
     FrameTemplateResponse,
     PrinterProfileResponse,
 )
-from sync import engine
 
 router = APIRouter(prefix="/config", tags=["config"])
 
 
 @router.get("", response_model=DeviceConfigResponse)
-def get_config(db: Session = Depends(get_db)):
-    device_id = resolve_device_id()
-    device = db.get(Device, device_id)
+def get_config(request: Request, db: Session = Depends(get_db)):
+    """Device config bundle only: device, profiles, public frames, voucher count.
 
-    assignment = (
-        db.query(DeviceAssignment)
-        .filter(
-            DeviceAssignment.device_id == device_id,
-            DeviceAssignment.status == "active",
-        )
-        .order_by(DeviceAssignment.assigned_from.desc())
-        .first()
-    )
-    booth = db.get(Booth, assignment.booth_id) if assignment else None
-    campaign = (
-        db.get(Campaign, booth.campaign_id)
-        if booth and booth.campaign_id
-        else None
-    )
+    Assignment data (assignment/booth/campaign) is intentionally excluded;
+    clients get it from GET /devices/me or GET /config/campaign instead.
+    """
+    device_id = require_request_device_id(request)
+    device = db.get(Device, device_id)
 
     camera = (
         db.get(CameraProfile, device.camera_profile_id)
@@ -60,7 +46,7 @@ def get_config(db: Session = Depends(get_db)):
         else None
     )
 
-    frames = _resolve_frames(db, campaign)
+    frames = _resolve_frames(db, None)
 
     offline_vouchers = (
         db.query(Voucher)
@@ -71,9 +57,6 @@ def get_config(db: Session = Depends(get_db)):
 
     return DeviceConfigResponse(
         device=DeviceResponse.model_validate(device) if device else None,
-        assignment=AssignmentResponse.model_validate(assignment) if assignment else None,
-        booth=BoothResponse.model_validate(booth) if booth else None,
-        campaign=CampaignResponse.model_validate(campaign) if campaign else None,
         camera_profile=CameraProfileResponse.model_validate(camera) if camera else None,
         printer_profile=PrinterProfileResponse.model_validate(printer) if printer else None,
         frames=[FrameTemplateResponse.model_validate(f) for f in frames],
@@ -82,16 +65,19 @@ def get_config(db: Session = Depends(get_db)):
 
 
 @router.get("/campaign", response_model=CampaignResponse)
-def get_campaign(db: Session = Depends(get_db)):
-    campaign = _active_campaign(db)
+def get_campaign(request: Request, db: Session = Depends(get_db)):
+    campaign = _active_campaign(db, require_request_device_id(request))
     if not campaign:
-        raise HTTPException(status_code=404, detail="No active campaign for this device.")
+        raise HTTPException(
+            status_code=404,
+            detail="No active campaign for this device: no assignment or the assignment window has expired.",
+        )
     return campaign
 
 
 @router.get("/profiles", response_model=dict)
-def get_profiles(db: Session = Depends(get_db)):
-    device = db.get(Device, resolve_device_id())
+def get_profiles(request: Request, db: Session = Depends(get_db)):
+    device = db.get(Device, require_request_device_id(request))
     camera = (
         db.get(CameraProfile, device.camera_profile_id)
         if device and device.camera_profile_id
@@ -108,17 +94,8 @@ def get_profiles(db: Session = Depends(get_db)):
     }
 
 
-def _active_campaign(db: Session) -> Campaign | None:
-    device_id = resolve_device_id()
-    assignment = (
-        db.query(DeviceAssignment)
-        .filter(
-            DeviceAssignment.device_id == device_id,
-            DeviceAssignment.status == "active",
-        )
-        .order_by(DeviceAssignment.assigned_from.desc())
-        .first()
-    )
+def _active_campaign(db: Session, device_id: str) -> Campaign | None:
+    assignment = get_valid_assignment(db, device_id)
     if not assignment:
         return None
     booth = db.get(Booth, assignment.booth_id)

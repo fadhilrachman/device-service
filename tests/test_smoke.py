@@ -1,4 +1,8 @@
-"""Smoke test for the device service (offline-first, no real server needed)."""
+"""Smoke test for the device service (direct remote DB, no sync layer).
+
+REMOTE_DATABASE_URL points at a temp SQLite file so the suite runs without
+network. All reads/writes go straight to that database.
+"""
 
 import os
 import sys
@@ -7,22 +11,19 @@ import tempfile
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 _TMPDIR = tempfile.mkdtemp(prefix="devicesvc_")
-os.environ["REMOTE_DATABASE_URL"] = "postgresql://invalid:invalid@localhost:1/offline"
-os.environ["LOCAL_DB_PATH"] = os.path.join(_TMPDIR, "device.db")
-os.environ["DEVICE_CODE"] = "TEST-DEV-0001"
-os.environ["DEVICE_NAME"] = "Test Device"
-os.environ["SYNC_ON_STARTUP"] = "false"
+os.environ["REMOTE_DATABASE_URL"] = f"sqlite:///{os.path.join(_TMPDIR, 'device.db')}"
+os.environ["PAYMENT_PROVIDER"] = "stub"
 os.environ["SSO_BASE_URL"] = "http://127.0.0.1:1"
 
 from fastapi.testclient import TestClient  # noqa: E402
 
-from database import local_session  # noqa: E402
+from database import remote_session  # noqa: E402
 from lib.time import wib_now  # noqa: E402
 from main import app  # noqa: E402
 from models.booth import Booth  # noqa: E402
 from models.campaign import Campaign  # noqa: E402
+from models.device import Device  # noqa: E402
 from models.device_assignment import DeviceAssignment  # noqa: E402
-from models.sync import SyncOutbox  # noqa: E402
 from models.voucher import Voucher  # noqa: E402
 from models.voucher_batch import VoucherBatch  # noqa: E402
 
@@ -31,8 +32,22 @@ import json  # noqa: E402
 import time  # noqa: E402
 
 
-def _make_token(user_id: str = "test-device-1") -> str:
+def _make_token(user_id: str = "test-device-1", device_id: str = "test-device-1") -> str:
     """Mint a structurally valid HS256-style JWT accepted by ProtectTokenMiddleware."""
+    def _b64(data: dict) -> str:
+        raw = json.dumps(data).encode("utf-8")
+        return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
+    header = {"alg": "HS256", "typ": "JWT"}
+    payload = {
+        "user_id": user_id,
+        "device_id": device_id,
+        "iat": 0,
+        "exp": int(time.time()) + 3600,
+    }
+    return f"{_b64(header)}.{_b64(payload)}.sig"
+
+
+def _make_token_no_device(user_id: str = "test-device-1") -> str:
     def _b64(data: dict) -> str:
         raw = json.dumps(data).encode("utf-8")
         return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
@@ -53,6 +68,39 @@ def ok(label: str):
 
 
 with TestClient(app, headers=AUTH_HEADERS) as client:
+    # seed the pre-registered device (no auto-provisioning anymore) plus a
+    # valid assignment window (sessions/payments require one)
+    from datetime import datetime, timedelta
+
+    with remote_session() as db:
+        db.add(
+            Device(
+                id="test-device-1",
+                device_code="TEST-DEV-0001",
+                name="Test Device",
+                status="active",
+            )
+        )
+        db.add(Campaign(id="camp-smoke", name="Smoke Campaign", price=50000))
+        db.add(
+            Booth(
+                id="booth-smoke",
+                name="Smoke Booth",
+                status="active",
+                campaign_id="camp-smoke",
+            )
+        )
+        db.add(
+            DeviceAssignment(
+                booth_id="booth-smoke",
+                device_id="test-device-1",
+                status="active",
+                assigned_from=wib_now() - timedelta(days=1),
+                assigned_until=datetime(2030, 1, 1),
+            )
+        )
+        db.commit()
+
     # 1. Health
     r = client.get("/")
     assert r.status_code == 200 and "running" in r.json()["message"]
@@ -64,44 +112,73 @@ with TestClient(app, headers=AUTH_HEADERS) as client:
     me = r.json()
     assert me["device_code"] == "TEST-DEV-0001"
     assert me["status"] == "active"
-    ok("GET /devices/me (auto-provisioned)")
+    ok("GET /devices/me")
+
+    # token without device_id claim -> 401 (identity comes from the token)
+    r = client.get(
+        "/devices/me",
+        headers={"Authorization": f"Bearer {_make_token_no_device()}"},
+    )
+    assert r.status_code == 401 and "device_id" in r.json()["detail"], r.text
+    ok("GET /devices/me without device_id claim -> 401")
+
+    # token device_id that is not registered -> 404
+    r = client.get(
+        "/devices/me",
+        headers={"Authorization": f"Bearer {_make_token('ghost', 'ghost-device')}"},
+    )
+    assert r.status_code == 404, r.text
+    ok("GET /devices/me unregistered token device -> 404")
 
     # 3. Heartbeat
     r = client.patch("/devices/heartbeat", json={"storage_state": "ok", "camera_health": "ok"})
     assert r.status_code == 200
     heartbeat = r.json()
-    assert heartbeat["connectivity"] == "offline"
+    assert heartbeat["connectivity"] == "online"
     assert heartbeat["storage_state"] == "ok"
-    ok("PATCH /devices/heartbeat (offline)")
+    ok("PATCH /devices/heartbeat (online)")
 
-    # 4. Empty config bundle
+    # 4. Empty config bundle (config-only: no assignment/booth/campaign keys)
     r = client.get("/config")
     assert r.status_code == 200
     cfg = r.json()
     assert cfg["device"]["id"] == me["id"]
     assert cfg["frames"] == [] and cfg["offline_vouchers"] == 0
-    ok("GET /config (empty, offline)")
+    assert "assignment" not in cfg and "booth" not in cfg and "campaign" not in cfg
+    assert set(cfg) == {
+        "device",
+        "camera_profile",
+        "printer_profile",
+        "frames",
+        "offline_vouchers",
+    }, set(cfg)
+    ok("GET /config (config-only, empty)")
 
-    # template list (empty offline)
+    # template list (empty)
     r = client.get("/templates")
     assert r.status_code == 200
     assert r.json() == []
-    ok("GET /templates (empty, offline)")
+    ok("GET /templates (empty)")
 
-    # 5. Start a session offline
+    # 5. Start a session (direct write, offline flag comes from the client)
     r = client.post("/sessions", json={})
     assert r.status_code == 201, r.text
     session = r.json()
     assert session["state"] == "started"
-    assert session["offline"] is True
+    assert session["offline"] is False
     assert session["device_code"] == "TEST-DEV-0001"
     sid = session["id"]
-    ok("POST /sessions (offline-first)")
+    ok("POST /sessions")
 
-    # session list + get
+    r = client.post("/sessions", json={"offline": True})
+    assert r.status_code == 201 and r.json()["offline"] is True
+    ok("POST /sessions with client offline flag")
+
+    # session list is scoped to this device
     r = client.get("/sessions")
-    assert r.status_code == 200 and r.json()["data"][0]["id"] == sid
-    ok("GET /sessions list")
+    assert r.status_code == 200 and r.json()["data"][0]["device_id"] == "test-device-1"
+    ok("GET /sessions list (device-scoped)")
+
     r = client.get(f"/sessions/{sid}")
     assert r.status_code == 200 and r.json()["id"] == sid
     ok("GET /sessions/{id}")
@@ -111,7 +188,7 @@ with TestClient(app, headers=AUTH_HEADERS) as client:
     assert r.status_code == 200 and r.json()["state"] == "complete"
     ok("PATCH /sessions/{id} state")
 
-    # ---- lifecycle state machine (offline) ------------------------------
+    # ---- lifecycle state machine --------------------------------------
     r = client.post("/sessions", json={})
     assert r.status_code == 201 and r.json()["state"] == "started"
     lc = r.json()["id"]
@@ -151,7 +228,7 @@ with TestClient(app, headers=AUTH_HEADERS) as client:
     assert r.status_code == 200 and r.json()["state"] == "cancelled", r.text
     ok("PATCH /sessions/{id}/cancel")
 
-    # frame not in campaign (offline config empty) -> 400
+    # frame not in campaign (empty config) -> 400
     r = client.post(
         "/sessions",
         json={"frame_template_id": "nope"},
@@ -159,9 +236,9 @@ with TestClient(app, headers=AUTH_HEADERS) as client:
     assert r.status_code == 400, r.text
     ok("frame_template_id rejected when not in campaign (400)")
 
-    # 6. Voucher flow (offline-eligible batch)
+    # 6. Voucher flow
     device_id = me["id"]
-    with local_session() as db:
+    with remote_session() as db:
         batch = VoucherBatch(name="Offline Batch", offline_eligible=True)
         db.add(batch)
         db.flush()
@@ -169,11 +246,10 @@ with TestClient(app, headers=AUTH_HEADERS) as client:
         db.add(v)
         db.commit()
 
-    r = client.get("/vouchers/TEST-AAAA")
-    assert r.status_code == 200
-    assert r.json()["status"] == "available"
-    assert r.json()["offline_eligible"] is True
-    ok("GET /vouchers/{code} validation")
+    # assignment valid but no vouchers yet -> empty list
+    r = client.get("/vouchers")
+    assert r.status_code == 200 and r.json() == [], r.text
+    ok("GET /vouchers empty -> []")
 
     # new session to redeem against
     r = client.post("/sessions", json={})
@@ -190,38 +266,7 @@ with TestClient(app, headers=AUTH_HEADERS) as client:
     assert r.status_code == 200
     ok("voucher verify repeated (idempotent)")
 
-    # non-eligible batch: eligibility no longer checked by verify endpoint
-    with local_session() as db:
-        batch2 = VoucherBatch(name="Online Only", offline_eligible=False)
-        db.add(batch2)
-        db.flush()
-        db.add(Voucher(batch_id=batch2.id, code="TEST-BBBB"))
-        db.commit()
-    r = client.post("/vouchers/TEST-BBBB/redeem", json={"session_id": sid2})
-    assert r.status_code == 200, r.text
-    ok("voucher verify ignores offline_eligible (200)")
-
-    # 7. Payment flow offline (device assigned to a booth, like a real kiosk)
-    with local_session() as db:
-        db.add(Campaign(id="camp-smoke", name="Smoke Campaign", price=50000))
-        db.add(
-            Booth(
-                id="booth-smoke",
-                name="Smoke Booth",
-                status="active",
-                campaign_id="camp-smoke",
-            )
-        )
-        db.add(
-            DeviceAssignment(
-                booth_id="booth-smoke",
-                device_id=device_id,
-                status="active",
-                assigned_from=wib_now(),
-            )
-        )
-        db.commit()
-
+    # 7. Payment flow (assignment was seeded up front with a valid window)
     r = client.post(
         "/payments",
         json={"session_id": sid, "amount": 50000, "method": "QRIS"},
@@ -233,31 +278,46 @@ with TestClient(app, headers=AUTH_HEADERS) as client:
     assert payment["campaign_id"] == "camp-smoke", payment
     assert payment["provider_ref"].startswith("stub-")
     assert "mock-pay" in r.json()["charge_url"]
-    ok("POST /payments (offline-first)")
+    ok("POST /payments (stub)")
 
     r = client.get(f"/payments/{payment['id']}")
     assert r.status_code == 200 and r.json()["id"] == payment["id"]
     ok("GET /payments/{id}")
 
-    # 8. Sync status shows pending outbox & offline
-    r = client.get("/sync/status")
-    st = r.json()
-    assert st["online"] is False
-    assert st["pending_push"] >= 4  # 2 sessions + 1 log + 1 voucher + 1 payment etc.
-    assert st["device_id"] == me["id"]
-    ok("GET /sync/status (offline, pending queue)")
+    # 8. Voucher list: batch.campaign_id == active campaign AND device_id == device
+    with remote_session() as db:
+        db.add(Campaign(id="camp-other", name="Other Campaign", price=1000))
+        db.add(
+            Booth(
+                id="booth-other",
+                name="Other Booth",
+                status="active",
+                campaign_id="camp-other",
+            )
+        )
+        batch_mine = VoucherBatch(
+            campaign_id="camp-smoke", name="Smoke Batch", offline_eligible=True
+        )
+        batch_other = VoucherBatch(
+            campaign_id="camp-other", name="Other Batch", offline_eligible=True
+        )
+        db.add(batch_mine)
+        db.add(batch_other)
+        db.flush()
+        db.add(Voucher(batch_id=batch_mine.id, code="MINE-0001", device_id=device_id))
+        db.add(Voucher(batch_id=batch_mine.id, code="OTHER-DEV", device_id="someone-else"))
+        db.add(Voucher(batch_id=batch_mine.id, code="UNCLAIMED"))
+        db.add(Voucher(batch_id=batch_other.id, code="OTHER-CAMP", device_id=device_id))
+        db.commit()
 
-    r = client.post("/sync/trigger")
-    assert r.status_code == 200
-    assert r.json()["ok"] is False and r.json()["error"] == "offline"
-    ok("POST /sync/trigger (offline -> reports offline)")
+    r = client.get("/vouchers")
+    assert r.status_code == 200, r.text
+    codes = sorted(v["code"] for v in r.json())
+    assert codes == ["MINE-0001"], codes
+    assert r.json()[0]["offline_eligible"] is True
+    ok("GET /vouchers lists only own campaign + own device vouchers")
 
-    # 9. Invalid voucher -> 404
-    r = client.get("/vouchers/ZZZZ-9999")
-    assert r.status_code == 404
-    ok("unknown voucher -> 404")
-
-    # 10. Device authorization API (/auth/device/*) proxies to SSO
+    # 9. Device authorization API (/auth/device/*) proxies to SSO
     r = client.get("/openapi.json")
     openapi = r.json()
     for path in [
@@ -268,9 +328,13 @@ with TestClient(app, headers=AUTH_HEADERS) as client:
         "/auth/device/revoke/",
     ]:
         assert path in openapi["paths"], path
-    ok("OpenAPI includes all 5 /auth/device paths")
+    assert "/sync/status" not in openapi["paths"]
+    assert "/sync/trigger" not in openapi["paths"]
+    assert "/vouchers/{code}" not in openapi["paths"]
+    assert "/vouchers" in openapi["paths"]
+    ok("OpenAPI includes all 5 /auth/device paths, no /sync or /vouchers/{code} paths")
 
-    # authorized operator call reaches the proxy; SSO unreachable offline -> 502
+    # authorized operator call reaches the proxy; SSO unreachable -> 502
     r = client.post(
         "/auth/device/verification/",
         json={
@@ -280,7 +344,7 @@ with TestClient(app, headers=AUTH_HEADERS) as client:
         },
     )
     assert r.status_code == 502 and "unreachable" in r.json()["detail"], r.text
-    ok("POST /auth/device/verification/ with token proxies to SSO (502 offline)")
+    ok("POST /auth/device/verification/ with token proxies to SSO (502)")
 
 with TestClient(app) as client_no_auth:
     # operator-only endpoints reject requests without a Bearer token
@@ -316,7 +380,7 @@ with TestClient(app) as client_no_auth:
         },
     )
     assert r.status_code != 401
-    assert r.status_code == 502  # SSO unreachable offline
+    assert r.status_code == 502  # SSO unreachable
     ok("POST /auth/device/token/ without token passes middleware (public)")
 
     r = client_no_auth.post(
@@ -327,4 +391,4 @@ with TestClient(app) as client_no_auth:
     assert r.status_code == 502
     ok("POST /auth/device/refresh/ without token passes middleware (public)")
 
-print(f"\nALL {PASS} offline smoke tests passed ({_TMPDIR})")
+print(f"\nALL {PASS} smoke tests passed ({_TMPDIR})")

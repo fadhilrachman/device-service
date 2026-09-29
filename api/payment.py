@@ -7,10 +7,10 @@ from config import (
     COMMERCE_BASE_URL,
     COMMERCE_TIMEOUT_SECONDS,
     get_commerce_offers,
-    resolve_device_id,
 )
-from api.device import _active_assignment
 from database import get_db
+from lib.device_assignment import get_valid_assignment
+from lib.device_identity import require_request_device_id
 from lib.commerce import (
     CommerceClient,
     CommerceError,
@@ -19,7 +19,6 @@ from lib.commerce import (
     extract_tenant_id,
     map_commerce_status,
 )
-from lib.outbox import enqueue
 from lib.payment_gateway import GatewayError, get_gateway
 from lib.time import wib_now
 from models.booth import Booth
@@ -27,7 +26,6 @@ from models.campaign import Campaign
 from models.device import Device
 from models.payment import Payment
 from schemas.payment import PaymentCreate, PaymentCreateResponse, PaymentResponse
-from sync import engine
 
 router = APIRouter(prefix="/payments", tags=["payments"])
 
@@ -49,17 +47,17 @@ def _resolve_amount(db: Session, campaign_id: str | None, amount: float | None) 
 
 @router.post("", response_model=PaymentCreateResponse, status_code=status.HTTP_201_CREATED)
 def create_payment(payload: PaymentCreate, request: Request, db: Session = Depends(get_db)):
-    device_id = resolve_device_id()
+    device_id = require_request_device_id(request)
     if not db.get(Device, device_id):
         raise HTTPException(status_code=404, detail="Device not found.")
 
     # Device, booth, and campaign always come from the server side: the
-    # device's active assignment. The kiosk never sends IDs.
-    assignment = _active_assignment(db, device_id)
+    # device's currently-valid assignment window. The kiosk never sends IDs.
+    assignment = get_valid_assignment(db, device_id)
     if assignment is None:
         raise HTTPException(
             status_code=400,
-            detail="Device is not assigned to any booth.",
+            detail="Device is not assigned: no active assignment or the assignment window has expired.",
         )
     booth = db.get(Booth, assignment.booth_id)
     if booth is None:
@@ -67,16 +65,9 @@ def create_payment(payload: PaymentCreate, request: Request, db: Session = Depen
     booth_id = booth.id
     campaign_id = booth.campaign_id
 
-    offline = not engine.is_online()
     gateway = get_gateway()
     context: dict | None = None
     if gateway.name == "commerce":
-        # Commerce is online-only; fail fast before persisting anything.
-        if offline:
-            raise HTTPException(
-                status_code=503,
-                detail="Commerce payment requires an online connection.",
-            )
         context = _commerce_context(request)
         # Attach the synced payment plan/price ids from this device's campaign.
         # Devices without an assignment or without synced ids cannot pay.
@@ -115,10 +106,7 @@ def create_payment(payload: PaymentCreate, request: Request, db: Session = Depen
         db_obj.provider_ref = charge["provider_ref"]
         db_obj.provider = gateway.name
         details = dict(charge.get("details") or {})
-        if offline:
-            details["offline"] = True
         db_obj.gateway_payload = details or None
-        enqueue(db, "payments", db_obj.id)
         db.commit()
     except (CommerceError, GatewayError) as exc:
         db.rollback()
@@ -208,7 +196,6 @@ def _refresh_commerce_state(db: Session, db_obj: Payment, context: dict) -> Paym
         db_obj.status = new_status
         if new_status == "succeeded":
             db_obj.paid_at = wib_now()
-        enqueue(db, "payments", db_obj.id)
     return db_obj
 
 
@@ -268,7 +255,6 @@ def cancel_payment(id: str, request: Request, db: Session = Depends(get_db)):
         db_obj.status = "failed"
         details["cancelled_locally"] = True
         db_obj.gateway_payload = details
-        enqueue(db, "payments", db_obj.id)
         db.commit()
     except CommerceError as exc:
         db.rollback()
@@ -278,8 +264,8 @@ def cancel_payment(id: str, request: Request, db: Session = Depends(get_db)):
 
 
 @router.get("", response_model=dict)
-def list_payments(limit: int = 20, db: Session = Depends(get_db)):
-    device_id = resolve_device_id()
+def list_payments(request: Request, limit: int = 20, db: Session = Depends(get_db)):
+    device_id = require_request_device_id(request)
     items = (
         db.query(Payment)
         .filter(Payment.device_id == device_id)

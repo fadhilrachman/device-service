@@ -1,35 +1,24 @@
 # Our Lil Photobooth — Device Service
 
 Service utama yang berjalan di setiap device photobooth (Raspberry Pi / SBC).
-Menjalankan product (session, voucher, payment) secara **offline-first** dengan
-SQLite lokal, lalu melakukan **periodic sync** ke PostgreSQL yang sama dengan
-admin panel (backend2).
+Semua operasi baca/tulis langsung ke PostgreSQL yang sama dengan admin panel
+(backend2). Tidak ada database lokal / sync engine — offline ditangani
+client-side oleh kiosk.
 
 ```
 ┌───────────────────────────────────────────────┐
 │                Raspberry Pi                    │
-│   FastAPI (device-service)  ──►  SQLite        │
-│        │                                       │
-│        └── periodic sync (30s)                 │
+│   FastAPI (device-service) ──► PostgreSQL      │
+│        (Neon — DB yang sama dgn admin)         │
 └────────────────────────────────────────────────┘
-                    │
-                    ▼
-      PostgreSQL (Neon) — DB yang sama dgn admin
 ```
 
 ## Arsitektur
 
-- **SQLite (`device.db`)** — database utama device. Semua operasi baca/tulis
-  dilakukan di sini (offline-first). Schema identik dengan admin panel.
-- **PostgreSQL (REMOTE_DATABASE_URL)** — database bersama. Sync engine:
-  - **Push (device → server):** sessions, session_device_logs, payments,
-    voucher redemption, heartbeat device.
-  - **Pull (server → device):** campaigns, booths, camera/printer profiles,
-    frame templates, voucher batches/vouchers, device assignments, device config.
-- **Outbox pattern:** setiap perubahan lokal dicatat di tabel `sync_outbox`;
-  sync engine memprosesnya secara idempotent saat online.
-- **Conflict resolution:** config = server menang; data operasional = device
-  menang; voucher di-redemption local = local menang sampai ter-push.
+- **PostgreSQL (REMOTE_DATABASE_URL)** — satu-satunya database (sama dengan
+  admin panel). Semua endpoint baca/tulis langsung ke sini: sessions,
+  session_device_logs, payments, voucher, heartbeat, serta config
+  (campaigns, booths, profiles, frame templates, vouchers, assignments).
 
 ## Setup
 
@@ -37,7 +26,7 @@ admin panel (backend2).
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-Copy-Item .env.example .env   # lalu isi REMOTE_DATABASE_URL & DEVICE_CODE
+Copy-Item .env.example .env   # lalu isi REMOTE_DATABASE_URL
 uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
@@ -45,14 +34,8 @@ uvicorn main:app --host 0.0.0.0 --port 8000
 
 | Variable | Default | Keterangan |
 |----------|---------|------------|
-| `DEVICE_ID` | *(auto-generated)* | UUID device, harus match device di admin panel. Tersimpan permanen di `device.id` |
-| `DEVICE_CODE` | `DEV-XXXXXXXX` | Kode device (harus match admin panel) |
-| `DEVICE_NAME` | — | Nama device |
 | `REMOTE_DATABASE_URL` | — | PostgreSQL URL (DB yang sama dengan admin panel) |
 | `JWT_SECRET` | *harus diisi* | Secret HS256 yang sama dengan `backend2/.env` untuk memverifikasi token Bearer |
-| `LOCAL_DB_PATH` | `device.db` | Path file SQLite lokal |
-| `SYNC_INTERVAL_SECONDS` | `30` | Interval sync |
-| `SYNC_ON_STARTUP` | `true` | Jalankan sync saat service start |
 | `PAYMENT_PROVIDER` | `stub` | Provider payment |
 | `STORAGE_BASE_URL` | `https://storage.arnatech.id` | Base URL storage service (proxy upload API) |
 | `SSO_BASE_URL` | `https://sso.arnatech.id/api` | Base URL SSO — digunakan proxy `/auth/device/*` |
@@ -62,9 +45,10 @@ uvicorn main:app --host 0.0.0.0 --port 8000
 
 Semua endpoint kecuali `/`, `/docs`, `/redoc`, `/openapi.json`, dan onboarding
 device (`POST /auth/device/authorize/`, `/token/`, `/refresh/`) mewajibkan header
-`Authorization: Bearer <token>`. Token adalah JWT terstruktur (HS256) yang memuat
-claim `user_id` (string), sama seperti token yang dipakai di repo `backend2` —
-token yang sama diterima oleh kedua service. Mint token untuk testing lokal:
+`Authorization: Bearer <token>`. Identitas device tidak datang dari env — diambil
+dari claim `device_id` token (UUID `devices.id` di database); token tanpa claim
+itu ditolak 401 di endpoint device. Token operator (untuk `/verification/` dan
+`/revoke/`) tidak membawa `device_id`. Mint token untuk testing lokal:
 
 ```powershell
 # di repo backend2
@@ -78,23 +62,21 @@ token yang sama diterima oleh kedua service. Mint token untuk testing lokal:
 | Method | Path | Deskripsi |
 |--------|------|-----------|
 | `GET` | `/` | Health check |
-| `GET` | `/config` | Bundle config device (assignment, booth, campaign, profiles, frames, voucher count) |
-| `GET` | `/config/campaign` | Campaign aktif |
+| `GET` | `/config` | Bundle config device (device, camera/printer profiles, frames, voucher count) |
+| `GET` | `/config/campaign` | Campaign aktif device (via assignment) |
 | `GET` | `/config/profiles` | Camera & printer profile |
 | `GET` | `/templates` | Frame template untuk campaign aktif |
 | `GET` | `/devices/me` | Info device sendiri |
 | `PATCH` | `/devices/heartbeat` | Heartbeat + health report |
-| `POST` | `/sessions` | Mulai sesi (offline-first) |
-| `GET` | `/sessions` | Daftar sesi terbaru |
+| `POST` | `/sessions` | Mulai sesi |
+| `GET` | `/sessions` | Daftar sesi terbaru device ini |
 | `GET` | `/sessions/{id}` | Detail sesi |
 | `PATCH` | `/sessions/{id}` | Update state sesi |
-| `GET` | `/vouchers/{code}` | Validasi voucher (lokal) |
-| `POST` | `/vouchers/{code}/redeem` | Redeem voucher (offline-first) |
-| `POST` | `/payments` | Buat payment (offline-first) |
+| `GET` | `/vouchers` | Daftar voucher campaign aktif milik device (filter dari token, untuk download lokal) |
+| `POST` | `/vouchers/{code}/redeem` | Redeem voucher |
+| `POST` | `/payments` | Buat payment |
 | `GET` | `/payments` | Daftar payment device |
 | `GET` | `/payments/{id}` | Detail payment |
-| `GET` | `/sync/status` | Status sync + antrian pending |
-| `POST` | `/sync/trigger` | Trigger sync manual |
 | `POST` | `/api/files/upload` | Inisiasi upload file (multipart presign) |
 | `POST` | `/api/files/{file_id}/parts/presign` | Presign parts upload |
 | `POST` | `/api/files/{file_id}/complete` | Selesaikan upload multipart |
@@ -105,18 +87,10 @@ token yang sama diterima oleh kedua service. Mint token untuk testing lokal:
 | `POST` | `/auth/device/refresh/` | Rotasi refresh token (proxi ke SSO) |
 | `POST` | `/auth/device/revoke/` | Revoke device oleh operator (Bearer, proxi ke SSO) |
 
-## Alur sync
-
-1. `push_device` — heartbeat/health device → server.
-2. `push_outbox` — push operasi tertunda, urut: sessions → logs → payments → vouchers.
-3. `pull_config` — refresh config dari server ke SQLite (server menang).
-4. `pull_payments` — tarik status payment terbaru (hasil webhook) ke lokal.
-
 ## Catatan produksi
 
 - Credential PostgreSQL ada di setiap device; gunakan role read-write khusus
   (bukan superuser) atau VPN jika sensitif.
-- Payment webhook tetap diterima admin panel; device mendapatkan status via pull.
-- Saat offline, redemption voucher hanya diizinkan jika batch-nya
-  `offline_eligible = true`.
-- Race inter-device pada voucher dengan kode sama di-resolve "last push wins".
+- Payment webhook tetap diterima admin panel; device membaca status terbaru
+  langsung dari database bersama via `POST /payments/{id}/refresh`.
+- Offline ditangani client-side oleh kiosk (service ini selalu butuh koneksi DB).

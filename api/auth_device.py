@@ -3,7 +3,6 @@ from fastapi.responses import JSONResponse, Response
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from config import resolve_device_id
 from database import remote_session
 from lib.sso import SSOClient, SSOError
 from models.device import Device
@@ -38,23 +37,25 @@ def _forward(response) -> Response:
     return JSONResponse(status_code=response.status_code, content=body)
 
 
-def _bind_tenant_on_authorize(db: Session, tenant_id: str, sso_device_code: str) -> None:
+def _bind_tenant_on_authorize(
+    db: Session, client_id: str, tenant_id: str, sso_device_code: str
+) -> None:
     """Persist tenant_id + device_code_sso on the pre-registered Neon device row.
 
-    First-install registration writes straight to Neon (never SQLite): the row
-    must already exist (pre-registered with the DEVICE_ID from env), otherwise
-    404. Authorize is one-time per device: any already-bound device is rejected
+    The row is located by ``devices.device_code`` matching the SSO
+    ``client_id`` from the authorize payload -- device identity never comes
+    from env. The row must already exist (pre-registered), otherwise 404.
+    Authorize is one-time per device: any already-bound device is rejected
     with 409 (resume polling via POST /auth/device/token instead). tenant_id
     stays optional (NULL until first authorize) & unique. Check-before-write:
     every 404/409 rejection happens before any mutation, so a rejected
     authorize never rotates the stored device_code_sso.
     """
-    device_id = resolve_device_id()
-    device = db.get(Device, device_id)
+    device = db.query(Device).filter(Device.device_code == client_id).first()
     if device is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Device {device_id} is not registered. Pre-register it before authorize.",
+            detail=f"Device client_id {client_id} is not registered. Pre-register it before authorize.",
         )
     # if device.tenant_id is not None:
     #     if device.tenant_id == tenant_id:
@@ -90,15 +91,15 @@ def _bind_tenant_on_authorize(db: Session, tenant_id: str, sso_device_code: str)
         )
 
 
-def _precheck_authorize_not_bound() -> None:
+def _precheck_authorize_not_bound(client_id: str) -> None:
     """Fast reject before hitting SSO: an already-bound device must not create
-    another SSO grant. Uses its own short session (never held across SSO I/O).
-    Raises 404/409/503; returns None when the device may proceed to SSO.
+    another SSO grant. Looks the device up by ``devices.device_code`` matching
+    the SSO ``client_id``. Uses its own short session (never held across SSO
+    I/O). Raises 404/409/503; returns None when the device may proceed to SSO.
     """
-    device_id = resolve_device_id()
     try:
         with remote_session() as db:
-            device = db.get(Device, device_id)
+            device = db.query(Device).filter(Device.device_code == client_id).first()
     except SQLAlchemyError:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -107,7 +108,7 @@ def _precheck_authorize_not_bound() -> None:
     if device is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Device {device_id} is not registered. Pre-register it before authorize.",
+            detail=f"Device client_id {client_id} is not registered. Pre-register it before authorize.",
         )
     if device.tenant_id is not None:
         raise HTTPException(
@@ -135,7 +136,7 @@ def _precheck_authorize_not_bound() -> None:
 def authorize_device(payload: DeviceAuthorizeRequest):
     # One-time authorize: reject bound devices BEFORE creating an SSO grant,
     # then re-check after SSO to close the concurrent-authorize race.
-    _precheck_authorize_not_bound()
+    _precheck_authorize_not_bound(payload.client_id)
     try:
         response = SSOClient().authorize(payload.model_dump(mode="json", exclude_none=True))
     except SSOError as exc:
@@ -157,7 +158,7 @@ def authorize_device(payload: DeviceAuthorizeRequest):
         )
     try:
         with remote_session() as db:
-            _bind_tenant_on_authorize(db, str(payload.tenant_id), sso_device_code)
+            _bind_tenant_on_authorize(db, payload.client_id, str(payload.tenant_id), sso_device_code)
     except HTTPException:
         raise
     except SQLAlchemyError:

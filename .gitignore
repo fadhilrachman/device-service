@@ -4,4 +4,4 @@ __pycache__/
 .env
 device.db
 device.db-journal
-device.id
+public.pem

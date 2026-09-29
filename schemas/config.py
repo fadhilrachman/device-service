@@ -1,11 +1,10 @@
 from typing import Optional
 from pydantic import BaseModel, ConfigDict
 
-from schemas.catalog import BoothResponse, CampaignResponse
+from schemas.catalog import BoothResponse, CampaignResponse  # noqa: F401 (re-export)
 from schemas.device import DeviceResponse
 
 __all__ = [
-    "AssignmentResponse",
     "BoothResponse",
     "CameraProfileResponse",
     "CampaignResponse",
@@ -85,21 +84,8 @@ class FrameTemplateResponse(BaseModel):
     publish_state: str
 
 
-class AssignmentResponse(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-    id: str
-    booth_id: str
-    device_id: str
-    assigned_from: object = None
-    assigned_until: object = None
-    status: str
-
-
 class DeviceConfigResponse(BaseModel):
     device: Optional[DeviceResponse] = None
-    assignment: Optional[AssignmentResponse] = None
-    booth: Optional[BoothResponse] = None
-    campaign: Optional[CampaignResponse] = None
     camera_profile: Optional[CameraProfileResponse] = None
     printer_profile: Optional[PrinterProfileResponse] = None
     frames: list[FrameTemplateResponse] = []

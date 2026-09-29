@@ -5,13 +5,15 @@ Single source of truth for the demo device identity:
     DEVICE_ID    fixed UUID (uuid5 of "ourlilphotobooth/device/{code}")
     DEVICE_CODE  PHB-001
 
-The same identity must be set in the device-service .env. Run from the project
-root:  python scripts/seed_neon.py
+Device identity below is explicit (device-service takes none from env; the
+kiosk authenticates with a token carrying the device_id claim). Run from the
+project root:  python scripts/seed_neon.py
 """
 
 import os
 import sys
 import uuid
+from datetime import datetime
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parents[1]
@@ -25,8 +27,8 @@ if not os.getenv("REMOTE_DATABASE_URL") and _BACKEND_ENV.exists():
             os.environ["REMOTE_DATABASE_URL"] = line.split("=", 1)[1].strip()
             break
 
-import config  # noqa: E402  (reads .env)
 from database import remote_session  # noqa: E402
+from lib.time import wib_now  # noqa: E402
 from lib.utils import new_id  # noqa: E402
 from models.booth import Booth  # noqa: E402
 from models.campaign import Campaign  # noqa: E402
@@ -40,9 +42,10 @@ from models.voucher import Voucher  # noqa: E402
 from models.voucher_batch import VoucherBatch  # noqa: E402
 from sqlalchemy.dialects.postgresql import insert as pg_insert  # noqa: E402
 
-DEVICE_CODE = config.DEVICE_CODE or "PHB-001"
-DEVICE_ID = config.DEVICE_ID or str(
-    uuid.uuid5(uuid.NAMESPACE_URL, f"ourlilphotobooth/device/{DEVICE_CODE}")
+DEVICE_CODE = os.getenv("SEED_DEVICE_CODE", "PHB-001")
+DEVICE_ID = os.getenv(
+    "SEED_DEVICE_ID",
+    str(uuid.uuid5(uuid.NAMESPACE_URL, f"ourlilphotobooth/device/{DEVICE_CODE}")),
 )
 
 _NS = uuid.NAMESPACE_URL
@@ -192,7 +195,7 @@ def seed_all() -> dict:
                 "status": "active",
                 "camera_profile_id": CAMERA_ID,
                 "printer_profile_id": PRINTER_ID,
-                "app_version": config.APP_VERSION,
+                "app_version": os.getenv("APP_VERSION", "0.1.0"),
             },
         )
 
@@ -204,6 +207,10 @@ def seed_all() -> dict:
                 "booth_id": BOOTH_ID,
                 "device_id": DEVICE_ID,
                 "status": "active",
+                # Validity window is mandatory: NULL bounds are treated as
+                # invalid, so the device would lose its assignment.
+                "assigned_from": wib_now(),
+                "assigned_until": datetime(2030, 1, 1),
             },
         )
 

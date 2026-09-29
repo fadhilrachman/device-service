@@ -1,11 +1,13 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
 
+from api.config import _active_campaign
 from database import get_db
-from lib.outbox import enqueue
+from lib.device_identity import require_request_device_id
 from lib.time import wib_now
 from models.session import SessionModel
 from models.voucher import Voucher
+from models.voucher_batch import VoucherBatch
 from schemas.voucher import VoucherRedeemRequest, VoucherResponse
 
 router = APIRouter(prefix="/vouchers", tags=["vouchers"])
@@ -18,27 +20,35 @@ def _to_response(db: Session, voucher: Voucher) -> VoucherResponse:
     return response
 
 
-def _mark_expired(db: Session, voucher: Voucher) -> VoucherResponse:
-    voucher.status = "expired"
-    enqueue(db, "vouchers", voucher.id)
-    db.commit()
-    return _to_response(db, voucher)
+@router.get("", response_model=list[VoucherResponse])
+def list_vouchers(request: Request, limit: int = 100, db: Session = Depends(get_db)):
+    """List vouchers for the calling device's active campaign.
 
-
-@router.get("/{code}", response_model=VoucherResponse)
-def get_voucher(code: str, db: Session = Depends(get_db)):
-    voucher = db.query(Voucher).filter(Voucher.code == code).first()
-    if not voucher:
-        raise HTTPException(status_code=404, detail="Voucher not found.")
-
-    now = wib_now()
-    if (
-        voucher.status == "available"
-        and voucher.expires_at is not None
-        and voucher.expires_at <= now
-    ):
-        return _mark_expired(db, voucher)
-    return _to_response(db, voucher)
+    Both filters come from the access token, never from query params:
+    ``vouchers.device_id`` must equal the token ``device_id`` claim and the
+    voucher's batch must belong to the device's active campaign (resolved via
+    its active assignment -> booth -> campaign). For the kiosk to download its
+    voucher data locally.
+    """
+    device_id = require_request_device_id(request)
+    campaign = _active_campaign(db, device_id)
+    if not campaign:
+        raise HTTPException(
+            status_code=404,
+            detail="No active campaign for this device: no assignment or the assignment window has expired.",
+        )
+    items = (
+        db.query(Voucher)
+        .join(VoucherBatch, Voucher.batch_id == VoucherBatch.id)
+        .filter(
+            VoucherBatch.campaign_id == campaign.id,
+            Voucher.device_id == device_id,
+        )
+        .order_by(Voucher.created_at.desc())
+        .limit(max(1, min(limit, 1000)))
+        .all()
+    )
+    return [_to_response(db, v) for v in items]
 
 
 @router.post("/{code}/redeem", response_model=VoucherResponse)

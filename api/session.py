@@ -1,17 +1,16 @@
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session, selectinload
 
 from api.config import _resolve_frames
-from config import resolve_device_id
 from database import get_db
-from lib.outbox import enqueue
+from lib.device_assignment import get_valid_assignment
+from lib.device_identity import require_request_device_id
 from models.booth import Booth
 from models.camera_profile import CameraProfile
 from models.campaign import Campaign
 from models.device import Device
-from models.device_assignment import DeviceAssignment
 from models.frame_template import FrameTemplate, PublishState
 from models.printer_profile import PrinterProfile
 from models.session import SessionModel, SessionState
@@ -23,7 +22,6 @@ from schemas.session import (
     SessionResponse,
     SessionUpdate,
 )
-from sync import engine
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
 
@@ -76,18 +74,6 @@ def _snapshot_payload(db: Session, device: Device | None, frame_id: str | None) 
     }
 
 
-def _active_assignment(db: Session, device_id: str) -> DeviceAssignment | None:
-    return (
-        db.query(DeviceAssignment)
-        .filter(
-            DeviceAssignment.device_id == device_id,
-            DeviceAssignment.status == "active",
-        )
-        .order_by(DeviceAssignment.assigned_from.desc())
-        .first()
-    )
-
-
 def _session_campaign(
     db: Session, session: SessionModel, device: Device | None = None
 ) -> Campaign | None:
@@ -95,7 +81,7 @@ def _session_campaign(
         device = db.get(Device, session.device_id)
     if not device:
         return None
-    assignment = _active_assignment(db, device.id)
+    assignment = get_valid_assignment(db, device.id)
     if not assignment:
         return None
     booth = db.get(Booth, assignment.booth_id)
@@ -144,7 +130,6 @@ def _step(db: Session, db_obj: SessionModel, action: str) -> SessionResponse:
     db_obj.state = next_state
     device = db.get(Device, db_obj.device_id) if db_obj.device_id else None
     try:
-        enqueue(db, "sessions", db_obj.id)
         _write_log(db, db_obj, device, action)
         db.commit()
     except Exception:
@@ -162,27 +147,27 @@ def _write_log(db: Session, db_obj: SessionModel, device: Device | None, reason:
     )
     db.add(log)
     db.flush()
-    enqueue(db, "session_device_logs", log.id)
 
 
 @router.post("", response_model=SessionResponse, status_code=status.HTTP_201_CREATED)
-def create_session(payload: SessionCreate, db: Session = Depends(get_db)):
-    device_id = resolve_device_id()
+def create_session(payload: SessionCreate, request: Request, db: Session = Depends(get_db)):
+    device_id = require_request_device_id(request)
     device = db.get(Device, device_id)
     if not device:
-        device = engine.ensure_local_device(db)
+        raise HTTPException(status_code=404, detail="Device not found.")
     if device.status != "active":
         raise HTTPException(status_code=409, detail="Device is not active.")
 
-    assignment = _active_assignment(db, device.id)
-    booth_id = assignment.booth_id if assignment else None
-    campaign_id = None
-    if assignment:
-        booth = db.get(Booth, assignment.booth_id)
-        if booth:
-            campaign_id = booth.campaign_id
+    assignment = get_valid_assignment(db, device.id)
+    if assignment is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Device is not assigned: no active assignment or the assignment window has expired.",
+        )
+    booth = db.get(Booth, assignment.booth_id)
+    booth_id = assignment.booth_id
+    campaign_id = booth.campaign_id if booth else None
 
-    offline = payload.offline or not engine.is_online()
     db_obj = SessionModel(
         campaign_id=campaign_id,
         booth_id=booth_id,
@@ -190,14 +175,13 @@ def create_session(payload: SessionCreate, db: Session = Depends(get_db)):
         frame_template_id=payload.frame_template_id,
         state=SessionState.STARTED,
         config_snapshot_id=payload.config_snapshot_id,
-        offline=offline,
+        offline=payload.offline,
     )
     if payload.frame_template_id:
         _apply_frame(db, db_obj, payload.frame_template_id, device)
     db.add(db_obj)
     try:
         db.flush()
-        enqueue(db, "sessions", db_obj.id)
         _write_log(db, db_obj, device, "created")
         db.commit()
     except Exception:
@@ -208,10 +192,11 @@ def create_session(payload: SessionCreate, db: Session = Depends(get_db)):
 
 
 @router.get("", response_model=SessionListResponse)
-def list_sessions(limit: int = 20, db: Session = Depends(get_db)):
+def list_sessions(request: Request, limit: int = 20, db: Session = Depends(get_db)):
     items = (
         db.query(SessionModel)
         .options(selectinload(SessionModel.device_logs))
+        .filter(SessionModel.device_id == require_request_device_id(request))
         .order_by(SessionModel.created_at.desc())
         .limit(limit)
         .all()
@@ -245,7 +230,6 @@ def update_session(id: str, payload: SessionUpdate, db: Session = Depends(get_db
             if not device:
                 raise HTTPException(status_code=404, detail="Device not found.")
             _write_log(db, db_obj, device, "device_swap")
-        enqueue(db, "sessions", db_obj.id)
         db.commit()
     except Exception:
         db.rollback()
@@ -266,7 +250,6 @@ def update_session_payment(
         )
     db_obj.activation_mode = payload.activation_mode
     try:
-        enqueue(db, "sessions", db_obj.id)
         db.commit()
     except Exception:
         db.rollback()
@@ -309,7 +292,6 @@ def cancel_session(session_id: str, db: Session = Depends(get_db)):
     device = db.get(Device, db_obj.device_id) if db_obj.device_id else None
     _write_log(db, db_obj, device, "cancelled")
     try:
-        enqueue(db, "sessions", db_obj.id)
         db.commit()
     except Exception:
         db.rollback()

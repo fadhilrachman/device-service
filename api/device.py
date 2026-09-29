@@ -1,39 +1,28 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
-from config import resolve_device_id
 from database import get_db
+from lib.device_assignment import get_valid_assignment
+from lib.device_identity import require_request_device_id
 from lib.time import wib_now
 from models.booth import Booth
 from models.campaign import Campaign
 from models.device import Device
-from models.device_assignment import DeviceAssignment
 from schemas.catalog import BoothResponse, CampaignResponse
 from schemas.device import (
     DeviceAssignmentResponse,
     DeviceHeartbeatRequest,
     DeviceResponse,
 )
-from sync import engine
 
 router = APIRouter(prefix="/devices", tags=["devices"])
 
 
-def _active_assignment(db: Session, device_id: str) -> DeviceAssignment | None:
-    return (
-        db.query(DeviceAssignment)
-        .filter(
-            DeviceAssignment.device_id == device_id,
-            DeviceAssignment.status == "active",
-        )
-        .order_by(DeviceAssignment.assigned_from.desc())
-        .first()
-    )
-
-
 def _me_response(db: Session, device: Device) -> DeviceResponse:
     response = DeviceResponse.model_validate(device)
-    assignment = _active_assignment(db, device.id)
+    # Window-checked: an assignment outside [assigned_from, assigned_until]
+    # (or with an undefined bound) surfaces as null here.
+    assignment = get_valid_assignment(db, device.id)
     if assignment:
         assignment_data = DeviceAssignmentResponse.model_validate(assignment)
         booth = db.get(Booth, assignment.booth_id)
@@ -50,26 +39,26 @@ def _me_response(db: Session, device: Device) -> DeviceResponse:
     return response
 
 
-@router.get("/me", response_model=DeviceResponse)
-def get_me(db: Session = Depends(get_db)):
-    device = db.get(Device, resolve_device_id())
+def _get_device_or_404(db: Session, device_id: str) -> Device:
+    device = db.get(Device, device_id)
     if not device:
-        device = engine.ensure_local_device(db)
-        db.commit()
-        db.refresh(device)
-    return _me_response(db, device)
+        raise HTTPException(status_code=404, detail="Device not found.")
+    return device
+
+
+@router.get("/me", response_model=DeviceResponse)
+def get_me(request: Request, db: Session = Depends(get_db)):
+    return _me_response(db, _get_device_or_404(db, require_request_device_id(request)))
 
 
 @router.patch("/heartbeat", response_model=DeviceResponse)
-def heartbeat(payload: DeviceHeartbeatRequest, db: Session = Depends(get_db)):
-    device = db.get(Device, resolve_device_id())
-    if not device:
-        device = engine.ensure_local_device(db)
+def heartbeat(payload: DeviceHeartbeatRequest, request: Request, db: Session = Depends(get_db)):
+    device = _get_device_or_404(db, require_request_device_id(request))
 
     now = wib_now()
     device.last_seen_at = now
     device.last_heartbeat = now
-    device.connectivity = "online" if engine.is_online() else "offline"
+    device.connectivity = "online"
     if payload.storage_state is not None:
         device.storage_state = payload.storage_state
     if payload.camera_health is not None:
