@@ -41,6 +41,7 @@ def _me_response(db: Session, device: Device) -> DeviceResponse:
 
 def _get_device_or_404(db: Session, device_id: str) -> Device:
     device = db.get(Device, device_id)
+    print(device)
     if not device:
         raise HTTPException(status_code=404, detail="Device not found.")
     return device

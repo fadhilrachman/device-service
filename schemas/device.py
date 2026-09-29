@@ -33,12 +33,14 @@ class DeviceResponse(BaseModel):
     name: Optional[str] = None
     serial_number: Optional[str] = None
     status: str
+    is_verified: bool = False
     capabilities: object = None
     camera_profile_id: Optional[str] = None
     printer_profile_id: Optional[str] = None
     app_version: Optional[str] = None
     last_seen_at: object = None
     last_heartbeat: object = None
+    last_synced_at: object = None
     connectivity: Optional[str] = None
     storage_state: Optional[str] = None
     camera_health: Optional[str] = None
