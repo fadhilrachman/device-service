@@ -1,7 +1,9 @@
-from sqlalchemy import String, Integer, Boolean, JSON
+from sqlalchemy import String, Integer, Boolean, DateTime, JSON
 from sqlalchemy.orm import Mapped, mapped_column
 from database import Base
+from lib.time import wib_now
 from lib.utils import new_id
+from datetime import datetime
 
 
 class PrinterProfile(Base):
@@ -31,3 +33,5 @@ class PrinterProfile(Base):
     template: Mapped[str | None] = mapped_column(String(200), nullable=True)
     retry_policy: Mapped[str | None] = mapped_column(String(50), nullable=True)
     calibration_offsets: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=wib_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=wib_now, onupdate=wib_now)

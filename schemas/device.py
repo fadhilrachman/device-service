@@ -51,3 +51,7 @@ class DeviceResponse(BaseModel):
 class DeviceListResponse(BaseModel):
     message: str
     data: list[DeviceResponse]
+
+
+class DeviceSyncStatusTriggerResponse(BaseModel):
+    is_sync_status_trigger: bool = False

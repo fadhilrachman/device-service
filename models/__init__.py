@@ -12,6 +12,7 @@ from .frame_template import FrameTemplate
 from .campaign_frame_template import campaign_frame_templates
 from .payment import Payment
 from .session_device_log import SessionDeviceLog
+from .device_sync_log import DeviceSyncLog
 
 
 def import_models() -> None:

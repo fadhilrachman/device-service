@@ -17,6 +17,7 @@ class Device(Base):
     serial_number: Mapped[str | None] = mapped_column(String(100), nullable=True)
     status: Mapped[str] = mapped_column(String(40), default='active', index=True)
     is_verified: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_sync_status: Mapped[bool] = mapped_column(Boolean, default=False)
     capabilities: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     camera_profile_id: Mapped[str | None] = mapped_column(String(36), ForeignKey('camera_profiles.id', ondelete='SET NULL'), nullable=True, unique=True)
     printer_profile_id: Mapped[str | None] = mapped_column(String(36), ForeignKey('printer_profiles.id', ondelete='SET NULL'), nullable=True, unique=True)
