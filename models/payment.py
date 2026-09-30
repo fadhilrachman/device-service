@@ -25,6 +25,7 @@ class Payment(Base):
     provider: Mapped[str] = mapped_column(String(40), default="stub")
     provider_ref: Mapped[str | None] = mapped_column(String(100), nullable=True, unique=True, index=True)
     gateway_payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    client_ref: Mapped[str | None] = mapped_column(String(100), nullable=True, unique=True)
     paid_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=wib_now, index=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=wib_now, onupdate=wib_now)

@@ -45,6 +45,7 @@ class SessionModel(Base):
         index=True,
     )
     config_snapshot_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    client_ref: Mapped[str | None] = mapped_column(String(100), nullable=True, unique=True)
     offline: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=wib_now, index=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=wib_now, onupdate=wib_now)
