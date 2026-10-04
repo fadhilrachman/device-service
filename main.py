@@ -45,7 +45,7 @@ app.include_router(session.router, include_in_schema=False)
 app.include_router(voucher.router)
 app.include_router(payment.router)
 app.include_router(templates.router)
-app.include_router(upload_api.router)
+app.include_router(upload_api.router, include_in_schema=False)
 app.include_router(auth_device_api.router)
 
 
