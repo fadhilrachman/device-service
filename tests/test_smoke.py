@@ -161,6 +161,10 @@ with TestClient(app, headers=AUTH_HEADERS) as client:
     assert r.json() == []
     ok("GET /templates (empty)")
 
+    r = client.get("/config/campaign")
+    assert r.status_code == 200 and r.json()["frame_set"] == [], r.text
+    ok("GET /config/campaign has an empty frame_set before linking frames")
+
     with remote_session() as db:
         db.add(FrameTemplate(
             id="frame-public-1",
@@ -194,6 +198,22 @@ with TestClient(app, headers=AUTH_HEADERS) as client:
             compatibility="",
             publish_state=PublishState.PUBLIC,
         ))
+        db.add(FrameTemplate(
+            id="frame-draft-1",
+            name="Draft Frame",
+            version="1",
+            assets="",
+            aspect="4:5",
+            dimensions="",
+            safe_area="",
+            transforms={},
+            preview_variant="1 foto",
+            print_variant="",
+            digital_variant="",
+            checksum="draft-frame-checksum",
+            compatibility="",
+            publish_state=PublishState.DRAFT,
+        ))
         db.commit()
 
     templates = client.get("/templates")
@@ -206,6 +226,7 @@ with TestClient(app, headers=AUTH_HEADERS) as client:
     with remote_session() as db:
         campaign = db.get(Campaign, "camp-smoke")
         campaign.frame_templates.append(db.get(FrameTemplate, "frame-public-1"))
+        campaign.frame_templates.append(db.get(FrameTemplate, "frame-draft-1"))
         db.commit()
 
     templates = client.get("/templates")
@@ -216,6 +237,11 @@ with TestClient(app, headers=AUTH_HEADERS) as client:
     assert templates.json()[0]["transforms"] == {"slots": [{"x": 10, "y": 20}]}
     assert templates.json()[0]["publish_state"] == "public"
     ok("GET /config.frames matches campaign templates exactly")
+
+    r = client.get("/config/campaign")
+    assert r.status_code == 200, r.text
+    assert r.json()["frame_set"] == ["frame-draft-1", "frame-public-1"]
+    ok("GET /config/campaign frame_set lists linked frames in a stable order")
 
     # 5. Start a session (direct write, offline flag comes from the client)
     r = client.post("/sessions", json={})

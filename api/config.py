@@ -15,6 +15,7 @@ from models.voucher import Voucher
 from models.voucher_batch import VoucherBatch
 from schemas.config import (
     CameraProfileResponse,
+    CampaignConfigResponse,
     CampaignResponse,
     DeviceConfigResponse,
     DeviceResponse,
@@ -67,7 +68,7 @@ def get_config(request: Request, db: Session = Depends(get_db)):
     )
 
 
-@router.get("/campaign", response_model=CampaignResponse)
+@router.get("/campaign", response_model=CampaignConfigResponse)
 def get_campaign(request: Request, db: Session = Depends(get_db)):
     campaign = _active_campaign(db, require_request_device_id(request))
     if not campaign:
@@ -75,7 +76,11 @@ def get_campaign(request: Request, db: Session = Depends(get_db)):
             status_code=404,
             detail="No active campaign for this device: no assignment or the assignment window has expired.",
         )
-    return campaign
+    response = CampaignResponse.model_validate(campaign).model_dump()
+    response["frame_set"] = [
+        frame.id for frame in sorted(campaign.frame_templates, key=lambda frame: (frame.name, frame.id))
+    ]
+    return CampaignConfigResponse.model_validate(response)
 
 
 @router.get("/profiles", response_model=dict)

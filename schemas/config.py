@@ -1,5 +1,5 @@
 from typing import Any, Optional
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from schemas.catalog import BoothResponse, CampaignResponse  # noqa: F401 (re-export)
 from schemas.device import DeviceResponse
@@ -9,11 +9,16 @@ __all__ = [
     "BoothResponse",
     "CameraProfileResponse",
     "CampaignResponse",
+    "CampaignConfigResponse",
     "DeviceConfigResponse",
     "DeviceResponse",
     "FrameTemplateResponse",
     "PrinterProfileResponse",
 ]
+
+
+class CampaignConfigResponse(CampaignResponse):
+    frame_set: list[str] = Field(default_factory=list)
 
 
 class CameraProfileResponse(BaseModel):
