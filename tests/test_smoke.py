@@ -306,6 +306,7 @@ with TestClient(app, headers=AUTH_HEADERS) as client:
     # assignment valid but no vouchers yet -> empty list
     r = client.get("/vouchers")
     assert r.status_code == 200 and r.json() == [], r.text
+    assert client.get("/config").json()["offline_vouchers"] == 0
     ok("GET /vouchers empty -> []")
 
     # new session to redeem against
@@ -358,10 +359,16 @@ with TestClient(app, headers=AUTH_HEADERS) as client:
         batch_other = VoucherBatch(
             campaign_id="camp-other", name="Other Batch", offline_eligible=True
         )
+        batch_legacy = VoucherBatch(
+            campaign_id="camp-smoke", name="Legacy Flag Batch", offline_eligible=False
+        )
         db.add(batch_mine)
         db.add(batch_other)
+        db.add(batch_legacy)
         db.flush()
         db.add(Voucher(batch_id=batch_mine.id, code="MINE-0001", device_id=device_id))
+        db.add(Voucher(batch_id=batch_mine.id, code="MINE-USED", device_id=device_id, status="used"))
+        db.add(Voucher(batch_id=batch_legacy.id, code="MINE-LEGACY", device_id=device_id))
         db.add(Voucher(batch_id=batch_mine.id, code="OTHER-DEV", device_id="someone-else"))
         db.add(Voucher(batch_id=batch_mine.id, code="UNCLAIMED"))
         db.add(Voucher(batch_id=batch_other.id, code="OTHER-CAMP", device_id=device_id))
@@ -370,9 +377,15 @@ with TestClient(app, headers=AUTH_HEADERS) as client:
     r = client.get("/vouchers")
     assert r.status_code == 200, r.text
     codes = sorted(v["code"] for v in r.json())
-    assert codes == ["MINE-0001"], codes
-    assert r.json()[0]["offline_eligible"] is True
-    ok("GET /vouchers lists only own campaign + own device vouchers")
+    assert codes == ["MINE-0001", "MINE-LEGACY", "MINE-USED"], codes
+    available = [v for v in r.json() if v["status"] == "available"]
+    assert sorted(v["code"] for v in available) == ["MINE-0001", "MINE-LEGACY"]
+    assert client.get("/config").json()["offline_vouchers"] == len(available)
+    first_page = client.get("/vouchers?limit=1&offset=0").json()
+    second_page = client.get("/vouchers?limit=1&offset=1").json()
+    assert len(first_page) == len(second_page) == 1
+    assert first_page[0]["id"] != second_page[0]["id"]
+    ok("GET /config.offline_vouchers matches available vouchers regardless of legacy flag")
 
     # 9. Device authorization API (/auth/device/*) proxies to SSO
     r = client.get("/openapi.json")
@@ -387,9 +400,11 @@ with TestClient(app, headers=AUTH_HEADERS) as client:
         assert path in openapi["paths"], path
     assert "/sync/status" not in openapi["paths"]
     assert "/sync/trigger" not in openapi["paths"]
+    assert "/sync/bulk" in openapi["paths"]
+    assert not any(path.startswith("/sessions") for path in openapi["paths"])
     assert "/vouchers/{code}" not in openapi["paths"]
     assert "/vouchers" in openapi["paths"]
-    ok("OpenAPI includes all 5 /auth/device paths, no /sync or /vouchers/{code} paths")
+    ok("OpenAPI shows /sync/bulk and hides all /sessions paths")
 
     # authorized operator call reaches the proxy; SSO unreachable -> 502
     r = client.post(

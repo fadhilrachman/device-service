@@ -46,14 +46,17 @@ def get_config(request: Request, db: Session = Depends(get_db)):
         else None
     )
 
-    frames = _resolve_frames(db, _active_campaign(db, device_id))
+    campaign = _active_campaign(db, device_id)
+    frames = _resolve_frames(db, campaign)
 
-    offline_vouchers = (
-        db.query(Voucher)
-        .join(VoucherBatch)
-        .filter(VoucherBatch.offline_eligible.is_(True), Voucher.status == "available")
-        .count()
-    )
+    offline_vouchers = 0
+    if campaign:
+        # Batch.offline_eligible is legacy data; the admin no longer sets it.
+        offline_vouchers = (
+            _device_vouchers(db, device_id, campaign)
+            .filter(Voucher.status == "available")
+            .count()
+        )
 
     return DeviceConfigResponse(
         device=DeviceResponse.model_validate(device) if device else None,
@@ -102,6 +105,17 @@ def _active_campaign(db: Session, device_id: str) -> Campaign | None:
     if not booth or not booth.campaign_id:
         return None
     return db.get(Campaign, booth.campaign_id)
+
+
+def _device_vouchers(db: Session, device_id: str, campaign: Campaign):
+    return (
+        db.query(Voucher)
+        .join(VoucherBatch, Voucher.batch_id == VoucherBatch.id)
+        .filter(
+            VoucherBatch.campaign_id == campaign.id,
+            Voucher.device_id == device_id,
+        )
+    )
 
 
 def _resolve_frames(db: Session, campaign: Campaign | None) -> list[FrameTemplate]:
