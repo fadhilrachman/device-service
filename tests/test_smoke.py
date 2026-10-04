@@ -24,6 +24,7 @@ from models.booth import Booth  # noqa: E402
 from models.campaign import Campaign  # noqa: E402
 from models.device import Device  # noqa: E402
 from models.device_assignment import DeviceAssignment  # noqa: E402
+from models.frame_template import FrameTemplate, PublishState  # noqa: E402
 from models.voucher import Voucher  # noqa: E402
 from models.voucher_batch import VoucherBatch  # noqa: E402
 
@@ -159,6 +160,62 @@ with TestClient(app, headers=AUTH_HEADERS) as client:
     assert r.status_code == 200
     assert r.json() == []
     ok("GET /templates (empty)")
+
+    with remote_session() as db:
+        db.add(FrameTemplate(
+            id="frame-public-1",
+            name="Public Frame",
+            version="1",
+            assets="",
+            aspect="4:5",
+            dimensions="",
+            safe_area="",
+            transforms={"slots": [{"x": 10, "y": 20}]},
+            preview_variant="1 foto",
+            print_variant="",
+            digital_variant="",
+            checksum="frame-checksum",
+            compatibility="",
+            publish_state=PublishState.PUBLIC,
+        ))
+        db.add(FrameTemplate(
+            id="frame-public-2",
+            name="Unlinked Public Frame",
+            version="1",
+            assets="",
+            aspect="4:5",
+            dimensions="",
+            safe_area="",
+            transforms={"slots": [{"x": 30, "y": 40}]},
+            preview_variant="1 foto",
+            print_variant="",
+            digital_variant="",
+            checksum="unlinked-frame-checksum",
+            compatibility="",
+            publish_state=PublishState.PUBLIC,
+        ))
+        db.commit()
+
+    templates = client.get("/templates")
+    config = client.get("/config")
+    assert templates.status_code == 200 and config.status_code == 200
+    assert config.json()["frames"] == templates.json()
+    assert len(templates.json()) == 2
+    ok("GET /config.frames matches /templates with global public frames")
+
+    with remote_session() as db:
+        campaign = db.get(Campaign, "camp-smoke")
+        campaign.frame_templates.append(db.get(FrameTemplate, "frame-public-1"))
+        db.commit()
+
+    templates = client.get("/templates")
+    config = client.get("/config")
+    assert templates.status_code == 200 and config.status_code == 200
+    assert config.json()["frames"] == templates.json()
+    assert [frame["id"] for frame in templates.json()] == ["frame-public-1"]
+    assert templates.json()[0]["transforms"] == {"slots": [{"x": 10, "y": 20}]}
+    assert templates.json()[0]["publish_state"] == "public"
+    ok("GET /config.frames matches campaign templates exactly")
 
     # 5. Start a session (direct write, offline flag comes from the client)
     r = client.post("/sessions", json={})

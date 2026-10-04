@@ -27,7 +27,7 @@ router = APIRouter(prefix="/config", tags=["config"])
 
 @router.get("", response_model=DeviceConfigResponse)
 def get_config(request: Request, db: Session = Depends(get_db)):
-    """Device config bundle only: device, profiles, public frames, voucher count.
+    """Device config bundle only: device, profiles, available frames, voucher count.
 
     Assignment data (assignment/booth/campaign) is intentionally excluded;
     clients get it from GET /devices/me or GET /config/campaign instead.
@@ -46,7 +46,7 @@ def get_config(request: Request, db: Session = Depends(get_db)):
         else None
     )
 
-    frames = _resolve_frames(db, None)
+    frames = _resolve_frames(db, _active_campaign(db, device_id))
 
     offline_vouchers = (
         db.query(Voucher)
@@ -112,10 +112,10 @@ def _resolve_frames(db: Session, campaign: Campaign | None) -> list[FrameTemplat
             if f.publish_state is PublishState.PUBLIC
         ]
         if linked:
-            return linked
+            return sorted(linked, key=lambda frame: (frame.name, frame.id))
     return (
         db.query(FrameTemplate)
         .filter(FrameTemplate.publish_state == PublishState.PUBLIC)
-        .order_by(FrameTemplate.name)
+        .order_by(FrameTemplate.name, FrameTemplate.id)
         .all()
     )

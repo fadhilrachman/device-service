@@ -1,7 +1,8 @@
 from enum import Enum
 
 from sqlalchemy import Enum as SAEnum
-from sqlalchemy import String, Text
+from sqlalchemy import JSON, String, Text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from database import Base
@@ -25,7 +26,7 @@ class FrameTemplate(Base):
     aspect: Mapped[str] = mapped_column(String(40))
     dimensions: Mapped[str] = mapped_column(Text, default="")
     safe_area: Mapped[str] = mapped_column(Text, default="")
-    transforms: Mapped[str] = mapped_column(Text, default="")
+    transforms: Mapped[dict] = mapped_column(JSONB().with_variant(JSON(), "sqlite"), default=dict)
     preview_variant: Mapped[str] = mapped_column(Text, default="")
     print_variant: Mapped[str] = mapped_column(Text, default="")
     digital_variant: Mapped[str] = mapped_column(Text, default="")

@@ -1,8 +1,9 @@
-from typing import Optional
+from typing import Any, Optional
 from pydantic import BaseModel, ConfigDict
 
 from schemas.catalog import BoothResponse, CampaignResponse  # noqa: F401 (re-export)
 from schemas.device import DeviceResponse
+from models.frame_template import PublishState
 
 __all__ = [
     "BoothResponse",
@@ -75,13 +76,13 @@ class FrameTemplateResponse(BaseModel):
     aspect: str
     dimensions: str
     safe_area: str
-    transforms: str
+    transforms: dict[str, Any]
     preview_variant: str
     print_variant: str
     digital_variant: str
     checksum: str
     compatibility: str
-    publish_state: str
+    publish_state: PublishState
 
 
 class DeviceConfigResponse(BaseModel):
