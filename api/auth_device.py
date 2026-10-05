@@ -5,7 +5,9 @@ from sqlalchemy.orm import Session
 from urllib.parse import quote
 
 from database import remote_session
-from lib.sso import SSOClient, SSOError
+from lib.device_conflict import device_conflict, device_taken, taken_conflict
+from lib.sso import SSOClient, SSOError, authorize_payload
+from lib.utils import new_device_code
 from models.device import Device
 from schemas.auth_device import (
     DeviceAuthorizeRequest,
@@ -85,16 +87,12 @@ def _bind_tenant_on_authorize(
     #     else:
     #         detail = "Device already bound to a tenant."
     #     raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=detail)
-    claimed = (
-        db.query(Device)
-        .filter(Device.tenant_id == tenant_id, Device.id != device.id)
-        .first()
-    )
-    if claimed is not None:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="tenant_id already bound to another device.",
-        )
+    if device_taken(db, Device.tenant_id, tenant_id, exclude_device_id=device.id):
+        raise taken_conflict("ix_devices_tenant_id")
+    # device_code_sso is unique too, and SSO can hand back a code this registry
+    # already stores -- check it here so the commit is not the first to notice.
+    if device_taken(db, Device.device_code_sso, sso_device_code, exclude_device_id=device.id):
+        raise taken_conflict("ix_devices_device_code_sso")
     if device.tenant_id is None:
         device.tenant_id = tenant_id
     # First and only grant write: re-authorize is rejected above, so the stored
@@ -103,24 +101,25 @@ def _bind_tenant_on_authorize(
     device.user_code_sso = sso_user_code
     try:
         db.commit()
-    except IntegrityError:
+    except IntegrityError as exc:
         db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="tenant_id already bound to another device.",
-        )
+        raise device_conflict(exc)
 
 
-def _ensure_registered_device(client_id: str, device_name: str) -> None:
+def _ensure_registered_device(client_id: str, device_name: str) -> str:
     """Find-or-create the Neon device row (register on authorize).
 
     A missing row is created with ``device_code=client_id`` and
     ``name=device_name`` (status defaults to active) -- same as backend2
     POST /devices, minus the rich detail fields. A concurrent create
     resolves via unique violation: rollback, re-fetch the winner and
-    continue. Raises 409 only when the device is already bound (one-time
+    continue. A violation that survives the re-fetch is classified by
+    SQLSTATE, so a not-null or foreign-key failure is never reported as a
+    duplicate value. Raises 409 only when the device is already bound (one-time
     authorize); uses its own short session (never held across SSO I/O).
     Raises 404 never; 409/503 on bound/unreachable.
+
+    Returns the client_id/device_code that is used for this device row.
     """
     try:
         with remote_session() as db:
@@ -130,14 +129,11 @@ def _ensure_registered_device(client_id: str, device_name: str) -> None:
                 db.add(device)
                 try:
                     db.commit()
-                except IntegrityError:
+                except IntegrityError as exc:
                     db.rollback()
                     device = db.query(Device).filter(Device.device_code == client_id).first()
                     if device is None:
-                        raise HTTPException(
-                            status_code=status.HTTP_409_CONFLICT,
-                            detail="Device registration conflict. Retry authorize.",
-                        )
+                        raise device_conflict(exc)
             if device.tenant_id is not None:
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
@@ -162,8 +158,13 @@ def _ensure_registered_device(client_id: str, device_name: str) -> None:
     status_code=status.HTTP_201_CREATED,
     response_model=DeviceAuthorizeResponse,
     responses={
-        400: {"description": "Missing/invalid fields or audience not allowed"},
-        409: {"description": "Device already authorized, or tenant bound to another device"},
+        400: {"description": "Missing/invalid fields, or the fixed audience or client is not allowed"},
+        409: {
+            "description": (
+                "Device already authorized, or a unique field (tenant_id / "
+                "device_code / device_code_sso) is already held by another device"
+            )
+        },
         429: {"description": "Too many authorization attempts"},
     },
 )
@@ -171,9 +172,46 @@ def authorize_device(payload: DeviceAuthorizeRequest):
     # Register-on-authorize (same as backend2 POST /devices): find-or-create
     # the row BEFORE creating an SSO grant, then re-check after SSO to close
     # the concurrent-authorize race.
-    _ensure_registered_device(payload.client_id, payload.device_name)
+    client_id_gen = new_device_code()
     try:
-        response = SSOClient().authorize(payload.model_dump(mode="json", exclude_none=True))
+        client_id = _ensure_registered_device(client_id_gen, payload.device_name)
+    except HTTPException:
+        raise
+    # Pre-check tenant not bound elsewhere before calling SSO, to mirror backend2
+    try:
+        with remote_session() as db:
+            device = db.query(Device).filter(Device.device_code == client_id).first()
+            if device is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Device client_id {client_id} is not registered. Pre-register it before authorize.",
+                )
+            if device.tenant_id is not None:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=(
+                        "Device already authorized. Resume polling via "
+                        "POST /auth/device/token with the stored device_code."
+                    ),
+                )
+            if device_taken(db, Device.tenant_id, str(payload.tenant_id), exclude_device_id=device.id):
+                raise taken_conflict("ix_devices_tenant_id")
+    except HTTPException:
+        raise
+    except SQLAlchemyError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Device registry (Neon) is unreachable. Retry when online.",
+        )
+    try:
+        response = SSOClient().authorize(
+            authorize_payload(
+                client_id=client_id,
+                device_name=payload.device_name,
+                tenant_id=payload.tenant_id,
+                public_key_thumbprint=payload.public_key_thumbprint,
+            )
+        )
     except SSOError as exc:
         raise HTTPException(status_code=exc.status_code or status.HTTP_502_BAD_GATEWAY, detail=exc.message)
     if not 200 <= response.status_code < 300:
@@ -195,7 +233,7 @@ def authorize_device(payload: DeviceAuthorizeRequest):
         with remote_session() as db:
             _bind_tenant_on_authorize(
                 db,
-                payload.client_id,
+                client_id,
                 str(payload.tenant_id),
                 sso_device_code,
                 sso_body.get("user_code") if isinstance(sso_body, dict) else None,
@@ -208,7 +246,9 @@ def authorize_device(payload: DeviceAuthorizeRequest):
             detail="Device registry (Neon) is unreachable. Retry when online.",
         )
     if isinstance(sso_body, dict):
-        return JSONResponse(status_code=response.status_code, content=_with_account_verify_urls(dict(sso_body)))
+        content = _with_account_verify_urls(dict(sso_body))
+        content["client_id"] = client_id
+        return JSONResponse(status_code=response.status_code, content=content)
     return _forward(response)
 
 

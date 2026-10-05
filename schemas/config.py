@@ -1,5 +1,5 @@
-from typing import Optional
-from pydantic import BaseModel, ConfigDict
+from typing import Any, Optional
+from pydantic import BaseModel, ConfigDict, Field
 
 from schemas.catalog import BoothResponse, CampaignResponse  # noqa: F401 (re-export)
 from schemas.device import DeviceResponse
@@ -75,7 +75,7 @@ class FrameTemplateResponse(BaseModel):
     aspect: str
     dimensions: str
     safe_area: str
-    transforms: str
+    transforms: dict[str, Any] = Field(default_factory=dict)
     preview_variant: str
     print_variant: str
     digital_variant: str
