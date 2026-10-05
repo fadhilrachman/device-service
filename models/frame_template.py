@@ -26,9 +26,6 @@ class FrameTemplate(Base):
     aspect: Mapped[str] = mapped_column(String(40))
     dimensions: Mapped[str] = mapped_column(Text, default="")
     safe_area: Mapped[str] = mapped_column(Text, default="")
-    # JSONB on Postgres (migrated by backend2), plain JSON on SQLite (tests).
-    # Server default lives in the backend2 migration, not here, so
-    # create_all stays valid on SQLite ('::jsonb' cast is Postgres-only).
     transforms: Mapped[dict] = mapped_column(JSONB().with_variant(JSON(), "sqlite"), default=dict)
     preview_variant: Mapped[str] = mapped_column(Text, default="")
     print_variant: Mapped[str] = mapped_column(Text, default="")

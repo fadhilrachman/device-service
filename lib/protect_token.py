@@ -49,7 +49,6 @@ class ProtectTokenMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         authorization = request.headers.get("authorization")
-        print(authorization)
         if not authorization:
             return unauthorized("Authorization header is required.")
 

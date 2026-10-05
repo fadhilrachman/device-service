@@ -1,13 +1,12 @@
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
 
-from api.config import _active_campaign
+from api.config import _active_campaign, _device_vouchers
 from database import get_db
 from lib.device_identity import require_request_device_id
 from lib.time import wib_now
 from models.session import SessionModel
 from models.voucher import Voucher
-from models.voucher_batch import VoucherBatch
 from schemas.voucher import VoucherRedeemRequest, VoucherResponse
 
 router = APIRouter(prefix="/vouchers", tags=["vouchers"])
@@ -21,7 +20,7 @@ def _to_response(db: Session, voucher: Voucher) -> VoucherResponse:
 
 
 @router.get("", response_model=list[VoucherResponse])
-def list_vouchers(request: Request, limit: int = 100, db: Session = Depends(get_db)):
+def list_vouchers(request: Request, limit: int = 100, offset: int = 0, db: Session = Depends(get_db)):
     """List vouchers for the calling device's active campaign.
 
     Both filters come from the access token, never from query params:
@@ -38,13 +37,9 @@ def list_vouchers(request: Request, limit: int = 100, db: Session = Depends(get_
             detail="No active campaign for this device: no assignment or the assignment window has expired.",
         )
     items = (
-        db.query(Voucher)
-        .join(VoucherBatch, Voucher.batch_id == VoucherBatch.id)
-        .filter(
-            VoucherBatch.campaign_id == campaign.id,
-            Voucher.device_id == device_id,
-        )
-        .order_by(Voucher.created_at.desc())
+        _device_vouchers(db, device_id, campaign)
+        .order_by(Voucher.created_at.desc(), Voucher.id.desc())
+        .offset(max(0, offset))
         .limit(max(1, min(limit, 1000)))
         .all()
     )

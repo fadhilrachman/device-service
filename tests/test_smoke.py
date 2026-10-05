@@ -24,6 +24,7 @@ from models.booth import Booth  # noqa: E402
 from models.campaign import Campaign  # noqa: E402
 from models.device import Device  # noqa: E402
 from models.device_assignment import DeviceAssignment  # noqa: E402
+from models.frame_template import FrameTemplate, PublishState  # noqa: E402
 from models.voucher import Voucher  # noqa: E402
 from models.voucher_batch import VoucherBatch  # noqa: E402
 
@@ -160,6 +161,88 @@ with TestClient(app, headers=AUTH_HEADERS) as client:
     assert r.json() == []
     ok("GET /templates (empty)")
 
+    r = client.get("/config/campaign")
+    assert r.status_code == 200 and r.json()["frame_set"] == [], r.text
+    ok("GET /config/campaign has an empty frame_set before linking frames")
+
+    with remote_session() as db:
+        db.add(FrameTemplate(
+            id="frame-public-1",
+            name="Public Frame",
+            version="1",
+            assets="",
+            aspect="4:5",
+            dimensions="",
+            safe_area="",
+            transforms={"slots": [{"x": 10, "y": 20}]},
+            preview_variant="1 foto",
+            print_variant="",
+            digital_variant="",
+            checksum="frame-checksum",
+            compatibility="",
+            publish_state=PublishState.PUBLIC,
+        ))
+        db.add(FrameTemplate(
+            id="frame-public-2",
+            name="Unlinked Public Frame",
+            version="1",
+            assets="",
+            aspect="4:5",
+            dimensions="",
+            safe_area="",
+            transforms={"slots": [{"x": 30, "y": 40}]},
+            preview_variant="1 foto",
+            print_variant="",
+            digital_variant="",
+            checksum="unlinked-frame-checksum",
+            compatibility="",
+            publish_state=PublishState.PUBLIC,
+        ))
+        db.add(FrameTemplate(
+            id="frame-draft-1",
+            name="Draft Frame",
+            version="1",
+            assets="",
+            aspect="4:5",
+            dimensions="",
+            safe_area="",
+            transforms={},
+            preview_variant="1 foto",
+            print_variant="",
+            digital_variant="",
+            checksum="draft-frame-checksum",
+            compatibility="",
+            publish_state=PublishState.DRAFT,
+        ))
+        db.commit()
+
+    templates = client.get("/templates")
+    config = client.get("/config")
+    assert templates.status_code == 200 and config.status_code == 200
+    assert config.json()["frames"] == templates.json()
+    assert len(templates.json()) == 2
+    ok("GET /config.frames matches /templates with global public frames")
+
+    with remote_session() as db:
+        campaign = db.get(Campaign, "camp-smoke")
+        campaign.frame_templates.append(db.get(FrameTemplate, "frame-public-1"))
+        campaign.frame_templates.append(db.get(FrameTemplate, "frame-draft-1"))
+        db.commit()
+
+    templates = client.get("/templates")
+    config = client.get("/config")
+    assert templates.status_code == 200 and config.status_code == 200
+    assert config.json()["frames"] == templates.json()
+    assert [frame["id"] for frame in templates.json()] == ["frame-public-1"]
+    assert templates.json()[0]["transforms"] == {"slots": [{"x": 10, "y": 20}]}
+    assert templates.json()[0]["publish_state"] == "public"
+    ok("GET /config.frames matches campaign templates exactly")
+
+    r = client.get("/config/campaign")
+    assert r.status_code == 200, r.text
+    assert r.json()["frame_set"] == ["frame-draft-1", "frame-public-1"]
+    ok("GET /config/campaign frame_set lists linked frames in a stable order")
+
     # 5. Start a session (direct write, offline flag comes from the client)
     r = client.post("/sessions", json={})
     assert r.status_code == 201, r.text
@@ -249,6 +332,7 @@ with TestClient(app, headers=AUTH_HEADERS) as client:
     # assignment valid but no vouchers yet -> empty list
     r = client.get("/vouchers")
     assert r.status_code == 200 and r.json() == [], r.text
+    assert client.get("/config").json()["offline_vouchers"] == 0
     ok("GET /vouchers empty -> []")
 
     # new session to redeem against
@@ -301,10 +385,16 @@ with TestClient(app, headers=AUTH_HEADERS) as client:
         batch_other = VoucherBatch(
             campaign_id="camp-other", name="Other Batch", offline_eligible=True
         )
+        batch_legacy = VoucherBatch(
+            campaign_id="camp-smoke", name="Legacy Flag Batch", offline_eligible=False
+        )
         db.add(batch_mine)
         db.add(batch_other)
+        db.add(batch_legacy)
         db.flush()
         db.add(Voucher(batch_id=batch_mine.id, code="MINE-0001", device_id=device_id))
+        db.add(Voucher(batch_id=batch_mine.id, code="MINE-USED", device_id=device_id, status="used"))
+        db.add(Voucher(batch_id=batch_legacy.id, code="MINE-LEGACY", device_id=device_id))
         db.add(Voucher(batch_id=batch_mine.id, code="OTHER-DEV", device_id="someone-else"))
         db.add(Voucher(batch_id=batch_mine.id, code="UNCLAIMED"))
         db.add(Voucher(batch_id=batch_other.id, code="OTHER-CAMP", device_id=device_id))
@@ -313,9 +403,15 @@ with TestClient(app, headers=AUTH_HEADERS) as client:
     r = client.get("/vouchers")
     assert r.status_code == 200, r.text
     codes = sorted(v["code"] for v in r.json())
-    assert codes == ["MINE-0001"], codes
-    assert r.json()[0]["offline_eligible"] is True
-    ok("GET /vouchers lists only own campaign + own device vouchers")
+    assert codes == ["MINE-0001", "MINE-LEGACY", "MINE-USED"], codes
+    available = [v for v in r.json() if v["status"] == "available"]
+    assert sorted(v["code"] for v in available) == ["MINE-0001", "MINE-LEGACY"]
+    assert client.get("/config").json()["offline_vouchers"] == len(available)
+    first_page = client.get("/vouchers?limit=1&offset=0").json()
+    second_page = client.get("/vouchers?limit=1&offset=1").json()
+    assert len(first_page) == len(second_page) == 1
+    assert first_page[0]["id"] != second_page[0]["id"]
+    ok("GET /config.offline_vouchers matches available vouchers regardless of legacy flag")
 
     # 9. Device authorization API (/auth/device/*) proxies to SSO
     r = client.get("/openapi.json")
@@ -330,9 +426,11 @@ with TestClient(app, headers=AUTH_HEADERS) as client:
         assert path in openapi["paths"], path
     assert "/sync/status" not in openapi["paths"]
     assert "/sync/trigger" not in openapi["paths"]
+    assert "/sync/bulk" in openapi["paths"]
+    assert not any(path.startswith("/sessions") for path in openapi["paths"])
     assert "/vouchers/{code}" not in openapi["paths"]
     assert "/vouchers" in openapi["paths"]
-    ok("OpenAPI includes all 5 /auth/device paths, no /sync or /vouchers/{code} paths")
+    ok("OpenAPI shows /sync/bulk and hides all /sessions paths")
 
     # authorized operator call reaches the proxy; SSO unreachable -> 502
     r = client.post(
