@@ -15,6 +15,7 @@ from models.voucher import Voucher
 from models.voucher_batch import VoucherBatch
 from schemas.config import (
     CameraProfileResponse,
+    CampaignConfigResponse,
     CampaignResponse,
     DeviceConfigResponse,
     DeviceResponse,
@@ -27,7 +28,7 @@ router = APIRouter(prefix="/config", tags=["config"])
 
 @router.get("", response_model=DeviceConfigResponse)
 def get_config(request: Request, db: Session = Depends(get_db)):
-    """Device config bundle only: device, profiles, public frames, voucher count.
+    """Device config bundle only: device, profiles, available frames, voucher count.
 
     Assignment data (assignment/booth/campaign) is intentionally excluded;
     clients get it from GET /devices/me or GET /config/campaign instead.
@@ -46,14 +47,17 @@ def get_config(request: Request, db: Session = Depends(get_db)):
         else None
     )
 
-    frames = _resolve_frames(db, None)
+    campaign = _active_campaign(db, device_id)
+    frames = _resolve_frames(db, campaign)
 
-    offline_vouchers = (
-        db.query(Voucher)
-        .join(VoucherBatch)
-        .filter(VoucherBatch.offline_eligible.is_(True), Voucher.status == "available")
-        .count()
-    )
+    offline_vouchers = 0
+    if campaign:
+        # Batch.offline_eligible is legacy data; the admin no longer sets it.
+        offline_vouchers = (
+            _device_vouchers(db, device_id, campaign)
+            .filter(Voucher.status == "available")
+            .count()
+        )
 
     return DeviceConfigResponse(
         device=DeviceResponse.model_validate(device) if device else None,
@@ -64,7 +68,7 @@ def get_config(request: Request, db: Session = Depends(get_db)):
     )
 
 
-@router.get("/campaign", response_model=CampaignResponse)
+@router.get("/campaign", response_model=CampaignConfigResponse)
 def get_campaign(request: Request, db: Session = Depends(get_db)):
     campaign = _active_campaign(db, require_request_device_id(request))
     if not campaign:
@@ -72,7 +76,11 @@ def get_campaign(request: Request, db: Session = Depends(get_db)):
             status_code=404,
             detail="No active campaign for this device: no assignment or the assignment window has expired.",
         )
-    return campaign
+    response = CampaignResponse.model_validate(campaign).model_dump()
+    response["frame_set"] = [
+        frame.id for frame in sorted(campaign.frame_templates, key=lambda frame: (frame.name, frame.id))
+    ]
+    return CampaignConfigResponse.model_validate(response)
 
 
 @router.get("/profiles", response_model=dict)
@@ -104,6 +112,17 @@ def _active_campaign(db: Session, device_id: str) -> Campaign | None:
     return db.get(Campaign, booth.campaign_id)
 
 
+def _device_vouchers(db: Session, device_id: str, campaign: Campaign):
+    return (
+        db.query(Voucher)
+        .join(VoucherBatch, Voucher.batch_id == VoucherBatch.id)
+        .filter(
+            VoucherBatch.campaign_id == campaign.id,
+            Voucher.device_id == device_id,
+        )
+    )
+
+
 def _resolve_frames(db: Session, campaign: Campaign | None) -> list[FrameTemplate]:
     if campaign:
         linked = [
@@ -112,10 +131,10 @@ def _resolve_frames(db: Session, campaign: Campaign | None) -> list[FrameTemplat
             if f.publish_state is PublishState.PUBLIC
         ]
         if linked:
-            return linked
+            return sorted(linked, key=lambda frame: (frame.name, frame.id))
     return (
         db.query(FrameTemplate)
         .filter(FrameTemplate.publish_state == PublishState.PUBLIC)
-        .order_by(FrameTemplate.name)
+        .order_by(FrameTemplate.name, FrameTemplate.id)
         .all()
     )

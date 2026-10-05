@@ -1,18 +1,24 @@
-from typing import Optional
-from pydantic import BaseModel, ConfigDict
+from typing import Any, Optional
+from pydantic import BaseModel, ConfigDict, Field
 
 from schemas.catalog import BoothResponse, CampaignResponse  # noqa: F401 (re-export)
 from schemas.device import DeviceResponse
+from models.frame_template import PublishState
 
 __all__ = [
     "BoothResponse",
     "CameraProfileResponse",
     "CampaignResponse",
+    "CampaignConfigResponse",
     "DeviceConfigResponse",
     "DeviceResponse",
     "FrameTemplateResponse",
     "PrinterProfileResponse",
 ]
+
+
+class CampaignConfigResponse(CampaignResponse):
+    frame_set: list[str] = Field(default_factory=list)
 
 
 class CameraProfileResponse(BaseModel):
@@ -75,13 +81,13 @@ class FrameTemplateResponse(BaseModel):
     aspect: str
     dimensions: str
     safe_area: str
-    transforms: str
+    transforms: dict[str, Any]
     preview_variant: str
     print_variant: str
     digital_variant: str
     checksum: str
     compatibility: str
-    publish_state: str
+    publish_state: PublishState
 
 
 class DeviceConfigResponse(BaseModel):
