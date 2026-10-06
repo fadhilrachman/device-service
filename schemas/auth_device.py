@@ -10,12 +10,15 @@ NAME_MAX = 160
 
 
 class DeviceAuthorizeRequest(BaseModel):
-    """Authorize input. `scopes` and `audience` are absent on purpose: the SSO
-    grant always uses the fixed server-side scope set and audience, so a caller
-    cannot widen or narrow its own access token or point the grant at a
-    different API. Sending either is rejected as an unknown field.
+    """Authorize input (kiosk-minimal, request body dipertahankan).
 
-    `client_id` is generated server-side and not accepted from the client.
+    Hanya ``device_name``, ``tenant_id``, dan ``public_key_thumbprint`` yang
+    diterima -- sama seperti sebelumnya, tidak diperkaya mengikuti
+    backend2 ``DeviceCreate`` yang kaya profil. Yang disamakan adalah
+    *konsep dan validasi*: `scopes` dan `audience` tidak ada di schema
+    (grant selalu memakai fixed server-side set + audience, pengirim field
+    tersebut dapat 422), dan `client_id`/`device_code` selalu generate
+    server-side sehingga tidak diterima dari client.
     """
 
     # Mirrors backend2 DeviceCreate: a stale client still sending `scopes`,
