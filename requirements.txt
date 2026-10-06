@@ -4,4 +4,5 @@ psycopg2-binary==2.9.12
 pydantic==2.13.5
 python-dotenv==1.2.3
 SQLAlchemy==2.0.52
+twilio==9.11.2
 uvicorn==0.52.4

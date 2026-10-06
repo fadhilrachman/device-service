@@ -24,6 +24,8 @@ from models.booth import Booth  # noqa: E402
 from models.campaign import Campaign  # noqa: E402
 from models.device import Device  # noqa: E402
 from models.device_assignment import DeviceAssignment  # noqa: E402
+from models.device_sync_log import DeviceSyncLog  # noqa: E402
+from models.session import SessionModel  # noqa: E402
 from models.frame_template import FrameTemplate, PublishState  # noqa: E402
 from models.voucher import Voucher  # noqa: E402
 from models.voucher_batch import VoucherBatch  # noqa: E402
@@ -413,7 +415,195 @@ with TestClient(app, headers=AUTH_HEADERS) as client:
     assert first_page[0]["id"] != second_page[0]["id"]
     ok("GET /config.offline_vouchers matches available vouchers regardless of legacy flag")
 
-    # 9. Device authorization API (/auth/device/*) proxies to SSO
+    # 9. Bulk sync with an optional device self-report
+    r = client.post("/sync/bulk", json={})
+    assert r.status_code == 400 and "Empty bulk payload" in r.json()["detail"], r.text
+    ok("POST /sync/bulk empty payload -> 400")
+
+    # device-only push (nothing to flush) is valid and writes the kiosk columns
+    device_report = {
+        "app_version": "1.4.0",
+        "storage_state": "free 12.4GB",
+        "camera_health": "connect",
+        "printer_health": "disconnect",
+    }
+    r = client.post("/sync/bulk", json={"device": device_report, "meta": {"app_version": "1.4.0"}})
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["device_updated"] is True, body
+    assert all(s["ok"] == 0 and s["failed"] == 0 for s in body["summary"].values()), body
+    with remote_session() as db:
+        dev = db.get(Device, device_id)
+        assert dev.app_version == "1.4.0", dev.app_version
+        assert dev.storage_state == "free 12.4GB", dev.storage_state
+        assert dev.camera_health == "connect", dev.camera_health
+        assert dev.printer_health == "disconnect", dev.printer_health
+        assert dev.connectivity == "online", dev.connectivity
+        assert dev.last_heartbeat is not None  # still stamped in DB, hidden from API responses
+        assert dev.last_synced_at is not None
+        cfg_device = body["changes"]["config"]["device"]
+        assert "last_heartbeat" not in cfg_device, cfg_device
+        assert "last_seen_at" not in cfg_device, cfg_device
+        assert cfg_device["connectivity"] == "online"
+        assert cfg_device["last_synced_at"] is not None
+        log = db.get(DeviceSyncLog, body["sync_log_id"])
+        assert log.meta["device"]["camera_health"] == "connect", log.meta  # enum stored as plain value
+        assert log.meta["app_version"] == "1.4.0", log.meta  # caller meta kept as-is
+    ok("POST /sync/bulk device-only push updates the device row and logs meta.device")
+
+    # identical payload -> row unchanged, reported as device_updated False
+    r = client.post("/sync/bulk", json={"device": device_report})
+    assert r.status_code == 201 and r.json()["device_updated"] is False, r.text
+    ok("repeat device payload -> device_updated False")
+
+    # heartbeat semantics: only the sent fields are overwritten
+    r = client.post("/sync/bulk", json={"device": {"printer_health": "connect"}})
+    assert r.status_code == 201 and r.json()["device_updated"] is True, r.text
+    with remote_session() as db:
+        dev = db.get(Device, device_id)
+        assert dev.printer_health == "connect"
+        assert dev.camera_health == "connect", dev.camera_health      # untouched
+        assert dev.app_version == "1.4.0", dev.app_version      # untouched
+        assert dev.storage_state == "free 12.4GB", dev.storage_state  # untouched
+    ok("partial device block only overwrites the fields it sends")
+
+    # camera/printer health is a closed vocabulary
+    for bad in ["ok", "ready", "CONNECT", "unknown", ""]:
+        r = client.post("/sync/bulk", json={"device": {"camera_health": bad}})
+        assert r.status_code == 422, (bad, r.text)
+    r = client.post("/sync/bulk", json={"device": {"printer_health": "paper_low"}})
+    assert r.status_code == 422, r.text
+    ok("POST /sync/bulk camera/printer_health outside connect|disconnect -> 422")
+
+    # capabilities is not kiosk-writable
+    r = client.post("/sync/bulk", json={"device": {"capabilities": {"printer": "ezprint"}}})
+    assert r.status_code == 422, r.text
+    with remote_session() as db:
+        assert db.get(Device, device_id).capabilities is None
+    ok("POST /sync/bulk device.capabilities -> 422 and column untouched")
+
+    # identity/binding columns are server-managed -> rejected, not silently ignored
+    r = client.post("/sync/bulk", json={"device": {"device_code": "HACKED"}})
+    assert r.status_code == 422, r.text
+    r = client.post("/sync/bulk", json={"device": {"tenant_id": "org-1"}})
+    assert r.status_code == 422, r.text
+    ok("POST /sync/bulk device.device_code / tenant_id -> 422")
+
+    # column width enforced by the schema, not by a Postgres truncation error
+    r = client.post("/sync/bulk", json={"device": {"app_version": "x" * 51}})
+    assert r.status_code == 422, r.text
+    ok("POST /sync/bulk device.app_version > 50 chars -> 422")
+
+    # records without a device block keep working, device_updated stays null
+    r = client.post(
+        "/sync/bulk",
+        json={"sessions": [{"session_local_id": "ses_smoke_bulk_1", "state": "complete", "offline": True}]},
+    )
+    assert r.status_code == 201, r.text
+    assert r.json()["device_updated"] is None, r.text
+    assert r.json()["summary"]["session"]["ok"] == 1, r.text
+    with remote_session() as db:
+        synced = (
+            db.query(SessionModel).filter(SessionModel.client_ref == "ses_smoke_bulk_1").first()
+        )
+        assert synced is not None and synced.code is not None, r.text
+        assert synced.code.startswith("SES-"), synced.code
+    ok("POST /sync/bulk records only -> device_updated null")
+
+    # 10. Pull side of POST /sync/bulk: vouchers since the watermark, config, frames
+    with remote_session() as db:
+        db.get(Device, device_id).last_synced_at = None  # a device that never synced
+        for log in db.query(DeviceSyncLog).filter(DeviceSyncLog.device_id == device_id).all():
+            log.meta = None  # ...and one that was never handed any frames
+        db.commit()
+
+    r = client.post("/sync/bulk", json={"device": {"app_version": "1.4.0"}})
+    assert r.status_code == 201, r.text
+    changes = r.json()["changes"]
+    assert changes["voucher_since"] is None, changes["voucher_since"]
+    assert sorted(v["code"] for v in changes["vouchers"]) == [
+        "MINE-0001",
+        "MINE-LEGACY",
+        "MINE-USED",
+    ], changes["vouchers"]
+    assert all(v["updated_at"] for v in changes["vouchers"])
+    with remote_session() as db:
+        assert db.get(Device, device_id).last_synced_at is not None
+    ok("first sync returns every device voucher and stamps devices.last_synced_at")
+
+    cfg = changes["config"]
+    assert set(cfg) == {
+        "device",
+        "camera_profile",
+        "printer_profile",
+        "offline_vouchers",
+    }, set(cfg)
+    assert "frames" not in cfg, cfg
+    assert not {"storage_state", "camera_health", "printer_health"} & set(cfg["device"]), sorted(cfg["device"])
+    live = client.get("/config").json()
+    assert {"storage_state", "camera_health", "printer_health"} <= set(live["device"])
+    for key in ("camera_profile", "printer_profile", "offline_vouchers"):
+        assert cfg[key] == live[key], key
+    ok("changes.config mirrors GET /config minus the three health fields and frames")
+
+    ft = changes["frame_templates"]
+    assert ft["campaign_id"] == "camp-smoke", ft["campaign_id"]
+    assert [f["id"] for f in ft["campaign_frames"]] == [f["id"] for f in live["frames"]]
+    assert [f["id"] for f in ft["new_frames"]] == [f["id"] for f in live["frames"]]
+    ok("changes.frame_templates: campaign set, everything counts as new on first sync")
+
+    # nothing touched since the watermark -> no vouchers, no new frames
+    r = client.post("/sync/bulk", json={"device": {"app_version": "1.4.1"}})
+    changes = r.json()["changes"]
+    assert changes["voucher_since"] is not None
+    assert changes["vouchers"] == [], changes["vouchers"]
+    assert changes["frame_templates"]["new_frames"] == []
+    assert [f["id"] for f in changes["frame_templates"]["campaign_frames"]] == ["frame-public-1"]
+    ok("repeat sync returns no changed vouchers and no new frames")
+
+    # a voucher created after the watermark comes back, and only it
+    with remote_session() as db:
+        batch = (
+            db.query(VoucherBatch)
+            .filter(VoucherBatch.campaign_id == "camp-smoke", VoucherBatch.name == "Smoke Batch")
+            .first()
+        )
+        db.add(Voucher(batch_id=batch.id, code="SYNC-NEW-1", device_id=device_id))
+        db.commit()
+    changes = client.post("/sync/bulk", json={"device": {"app_version": "1.4.2"}}).json()["changes"]
+    assert [v["code"] for v in changes["vouchers"]] == ["SYNC-NEW-1"], changes["vouchers"]
+    ok("only vouchers created after last_synced_at come back")
+
+    # a frame linked to the campaign after the last delivery shows up as new
+    with remote_session() as db:
+        db.add(FrameTemplate(
+            id="frame-public-3",
+            name="Newly Linked Frame",
+            version="1",
+            assets="",
+            aspect="4:5",
+            dimensions="",
+            safe_area="",
+            transforms={},
+            preview_variant="1 foto",
+            print_variant="",
+            digital_variant="",
+            checksum="newly-linked-checksum",
+            compatibility="",
+            publish_state=PublishState.PUBLIC,
+        ))
+        db.commit()
+        campaign = db.get(Campaign, "camp-smoke")
+        campaign.frame_templates.append(db.get(FrameTemplate, "frame-public-3"))
+        db.commit()
+        assert len(campaign.frame_templates) >= 1
+    changes = client.post("/sync/bulk", json={"device": {"app_version": "1.4.3"}}).json()["changes"]
+    ft = changes["frame_templates"]
+    assert [f["id"] for f in ft["new_frames"]] == ["frame-public-3"], [f["id"] for f in ft["new_frames"]]
+    assert {f["id"] for f in ft["campaign_frames"]} == {"frame-public-1", "frame-public-3"}
+    ok("newly assigned frame appears in new_frames, full campaign set is always returned")
+
+    # 11. Device authorization API (/auth/device/*) proxies to SSO
     r = client.get("/openapi.json")
     openapi = r.json()
     for path in [
@@ -443,6 +633,147 @@ with TestClient(app, headers=AUTH_HEADERS) as client:
     )
     assert r.status_code == 502 and "unreachable" in r.json()["detail"], r.text
     ok("POST /auth/device/verification/ with token proxies to SSO (502)")
+
+    # 11b. Successful token issuance flips connectivity to connect.
+    import api.auth_device as auth_device_api
+
+    class _FakeTokenResponse:
+        def __init__(self, status_code, body):
+            self.status_code = status_code
+            self._body = body
+
+        def json(self):
+            return self._body
+
+    class _FakeTokenSSOClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def token(self, payload):
+            assert payload["device_code"] == "sso-code-conn-1", payload
+            return _FakeTokenResponse(
+                200,
+                {"access_token": "tok", "refresh_token": "ref",
+                 "token_type": "Bearer", "expires_in": 300},
+            )
+
+    with remote_session() as db:
+        db.add(
+            Device(
+                id="test-device-conn",
+                device_code="TEST-DEV-CONN",
+                device_code_sso="sso-code-conn-1",
+                status="active",
+                connectivity="disconnect",
+            )
+        )
+        db.commit()
+    _real_sso_client = auth_device_api.SSOClient
+    auth_device_api.SSOClient = _FakeTokenSSOClient
+    try:
+        r = client.post(
+            "/auth/device/token/",
+            json={
+                "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+                "device_code": "sso-code-conn-1",
+            },
+        )
+        assert r.status_code == 200, r.text
+        assert r.json()["access_token"] == "tok", r.text
+    finally:
+        auth_device_api.SSOClient = _real_sso_client
+    with remote_session() as db:
+        row = db.get(Device, "test-device-conn")
+        assert row.connectivity == "connect", row.connectivity
+        assert row.is_verified is True, row.is_verified
+    ok("POST /auth/device/token/ success flips connectivity to connect + verified")
+
+    # 12. WhatsApp send (Twilio content template), Twilio itself is faked out
+    import config as svc_config
+    from api.whatsapp import get_whatsapp_client
+    from lib.whatsapp import WhatsAppClient, WhatsAppError, normalize_recipient
+
+    sent = {}
+
+    class FakeWhatsAppClient:
+        from_address = "whatsapp:+17372508034"
+
+        def __init__(self, error=None):
+            self.error = error
+
+        def send_template(self, to, content_variables=None):
+            if self.error is not None:
+                raise self.error
+            sent.clear()
+            sent.update({"to": to, "content_variables": content_variables})
+            return {"sid": "SM_FAKE", "status": "queued", "to": to, "from": self.from_address}
+
+    svc_config.TWILIO_ACCOUNT_SID = "AC-test"
+    svc_config.TWILIO_AUTH_TOKEN = "token-test"
+    app.dependency_overrides[get_whatsapp_client] = lambda: FakeWhatsAppClient()
+
+    r = client.post(
+        "/whatsapp/send",
+        json={"to": "+62 881-0220 77883", "content_variables": {"1": "https://x/y.jpg"}},
+    )
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["message_sid"] == "SM_FAKE" and body["status"] == "queued", body
+    assert body["to"] == "whatsapp:+62881022077883", body
+    assert body["from_number"] == "whatsapp:+17372508034", body
+    assert body["device_id"] == device_id, body
+    assert sent == {
+        "to": "whatsapp:+62881022077883",
+        "content_variables": {"1": "https://x/y.jpg"},
+    }, sent
+    ok("POST /whatsapp/send normalizes the number and returns the Twilio sid")
+
+    r = client.post("/whatsapp/send", json={"to": "whatsapp:+62881022077883"})
+    assert r.status_code == 201 and sent["content_variables"] is None, r.text
+    ok("POST /whatsapp/send accepts the whatsapp: prefix and no variables")
+
+    for bad in ["0811", "not-a-number", "whatsapp:+1234", "+62abc", ""]:
+        r = client.post("/whatsapp/send", json={"to": bad})
+        assert r.status_code == 400, (bad, r.status_code, r.text)
+    ok("POST /whatsapp/send rejects invalid WhatsApp addresses -> 400")
+
+    app.dependency_overrides[get_whatsapp_client] = lambda: FakeWhatsAppClient(
+        WhatsAppError("twilio unreachable", status_code=503)
+    )
+    r = client.post("/whatsapp/send", json={"to": "+62881022077883"})
+    assert r.status_code == 502 and "twilio unreachable" in r.json()["detail"], r.text
+    app.dependency_overrides[get_whatsapp_client] = lambda: FakeWhatsAppClient(
+        WhatsAppError("content template not approved", status_code=400)
+    )
+    r = client.post("/whatsapp/send", json={"to": "+62881022077883"})
+    assert r.status_code == 400 and "not approved" in r.json()["detail"], r.text
+    ok("Twilio failures map to 502 (upstream 5xx) and 400 (upstream 4xx)")
+
+    svc_config.TWILIO_ACCOUNT_SID = ""
+    svc_config.TWILIO_AUTH_TOKEN = ""
+    r = client.post("/whatsapp/send", json={"to": "+62881022077883"})
+    assert r.status_code == 503, r.text
+    svc_config.TWILIO_ACCOUNT_SID = "AC-test"
+    svc_config.TWILIO_AUTH_TOKEN = "token-test"
+    ok("POST /whatsapp/send without credentials -> 503")
+
+    app.dependency_overrides.pop(get_whatsapp_client)
+    r = client.post(
+        "/whatsapp/send",
+        json={"to": "+62881022077883"},
+        headers={"Authorization": f"Bearer {_make_token_no_device()}"},
+    )
+    assert r.status_code == 401, r.text
+    ok("POST /whatsapp/send without device_id claim -> 401 (kiosk-only)")
+
+    # client wiring reads env config and never touches the network on build
+    whatsapp_client = WhatsAppClient()
+    assert whatsapp_client.content_sid == svc_config.TWILIO_WHATSAPP_CONTENT_SID
+    assert whatsapp_client.from_address == svc_config.TWILIO_WHATSAPP_FROM
+    assert normalize_recipient("whatsapp:+62881022077883") == "whatsapp:+62881022077883"
+    assert normalize_recipient("+62 881-0220 77883") == "whatsapp:+62881022077883"
+    assert "/whatsapp/send" in app.openapi()["paths"]
+    ok("WhatsAppClient wires from config; recipient normalization accepts +62/spacing")
 
 with TestClient(app) as client_no_auth:
     # operator-only endpoints reject requests without a Bearer token

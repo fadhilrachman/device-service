@@ -27,7 +27,9 @@ class Device(Base):
     last_synced_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
     # No onupdate: heartbeat touches must NOT bump this. Matches backend2.
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=wib_now)
-    connectivity: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Deploy signal: rows are born 'disconnect' (server default); the kiosk
+    # flips it to 'connect' on its first successful POST /auth/device/token.
+    connectivity: Mapped[str | None] = mapped_column(Text, nullable=True, default="disconnect")
     storage_state: Mapped[str | None] = mapped_column(Text, nullable=True)
     camera_health: Mapped[str | None] = mapped_column(Text, nullable=True)
     printer_health: Mapped[str | None] = mapped_column(Text, nullable=True)

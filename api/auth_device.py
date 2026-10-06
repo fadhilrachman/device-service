@@ -1,3 +1,5 @@
+import logging
+
 from fastapi import APIRouter, HTTPException, Request, status
 from fastapi.responses import JSONResponse, Response
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
@@ -21,6 +23,8 @@ from schemas.auth_device import (
 )
 
 router = APIRouter(prefix="/auth/device", tags=["auth"])
+
+logger = logging.getLogger(__name__)
 
 # Hardcoded operator verification page. The kiosk QR/manual code always
 # points here instead of the verification_uri returned by SSO.
@@ -273,6 +277,30 @@ def verify_device(payload: DeviceVerificationRequest, request: Request):
     return _forward(response)
 
 
+def _mark_connected(device_code_sso: str) -> None:
+    """Mark the device connected + verified on first successful token issuance.
+
+    A 2xx from SSO means the grant was approved, so the pairing is complete:
+    flip connectivity to 'connect' and is_verified to True.
+
+    Best-effort by design: token issuance must never break because of these
+    flags. Failures are logged; the kiosk keeps polling and a later success
+    (or any subsequent success) will set them.
+    """
+    try:
+        with remote_session() as db:
+            device = db.query(Device).filter(Device.device_code_sso == device_code_sso).first()
+            if device is None:
+                return
+            if (device.connectivity or "").lower() != "connect":
+                device.connectivity = "connect"
+            if not device.is_verified:
+                device.is_verified = True
+            db.commit()
+    except Exception as exc:
+        logger.warning("failed to mark device connected (sso_code=%s): %s", device_code_sso, exc)
+
+
 @router.post(
     "/token/",
     operation_id="auth_device_token_create",
@@ -287,6 +315,8 @@ def device_token(payload: DeviceTokenRequest):
         response = SSOClient().token(payload.model_dump(mode="json", exclude_none=True))
     except SSOError as exc:
         raise HTTPException(status_code=exc.status_code or status.HTTP_502_BAD_GATEWAY, detail=exc.message)
+    if response.status_code == status.HTTP_200_OK:
+        _mark_connected(payload.device_code)
     return _forward(response)
 
 

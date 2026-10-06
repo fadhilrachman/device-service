@@ -37,6 +37,29 @@ COMMERCE_FAILURE_URL = os.getenv(
 )
 
 
+# ===== Twilio WhatsApp =====
+# The kiosk sends a Twilio *content template* (content_sid) so the copy is
+# reviewed by WhatsApp; free-form text is not sent. Credentials live in .env
+# only (see .env.example for the variable list).
+TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID", "").strip()
+TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN", "").strip()
+# Sender address. +1 737 250 8034 is Twilio's own sandbox number: recipients must
+# have joined the sandbox before it can reach them. Replace with the production
+# WhatsApp sender once the business account is provisioned.
+TWILIO_WHATSAPP_FROM = os.getenv(
+    "TWILIO_WHATSAPP_FROM", "whatsapp:+17372508034"
+).strip()
+TWILIO_WHATSAPP_CONTENT_SID = os.getenv(
+    "TWILIO_WHATSAPP_CONTENT_SID", "HXd3d932e8cb4598189831c97250c43d17"
+).strip()
+TWILIO_TIMEOUT_SECONDS = float(os.getenv("TWILIO_TIMEOUT_SECONDS", "20"))
+
+
+def whatsapp_configured() -> bool:
+    """True when the WhatsApp sender can be built (credentials present)."""
+    return bool(TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN)
+
+
 def get_commerce_offers() -> dict:
     """Parse COMMERCE_OFFERS_JSON: {campaign_id: {product, plan, price, description?}}.
 

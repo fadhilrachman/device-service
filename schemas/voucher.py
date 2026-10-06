@@ -14,6 +14,7 @@ class VoucherResponse(BaseModel):
     issued_at: object = None
     used_at: object = None
     created_at: object = None
+    updated_at: object = None
     offline_eligible: bool = False
 
 

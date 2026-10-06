@@ -29,3 +29,17 @@ VOUCHER_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
 def new_voucher_code() -> str:
     chars = "".join(secrets.choice(VOUCHER_ALPHABET) for _ in range(8))
     return f"{chars[:4]}-{chars[4:]}"
+
+
+# Human-friendly session codes, same alphabet as device/voucher codes.
+SESSION_CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
+
+
+def new_session_code(prefix: str = "SES-") -> str:
+    """Generate a short, collision-resistant session code (e.g. SES-XXXXXXXX).
+
+    Must stay under the sessions.code column width (20). Uniqueness is
+    enforced by a unique index; callers retry on the rare collision.
+    """
+    suffix = "".join(secrets.choice(SESSION_CODE_ALPHABET) for _ in range(8))
+    return f"{prefix}{suffix}"
