@@ -12,7 +12,7 @@ SSO_BASE_URL = os.getenv("SSO_BASE_URL", "https://sso.arnatech.id/api").rstrip("
 # widen or narrow what its access token is allowed to do, and cannot point the
 # grant at a different API. Kept here (not in the request schema) so both
 # services derive the authorize body from one definition.
-DEVICE_AUTHORIZE_SCOPES = ["string"]
+DEVICE_AUTHORIZE_SCOPES = ["commerce.orders.write", "commerce.payments.process"]
 DEVICE_AUTHORIZE_AUDIENCE = "photobooth-api"
 
 

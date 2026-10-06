@@ -25,6 +25,7 @@ class Device(Base):
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     last_heartbeat: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     last_synced_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=wib_now)
     # No onupdate: heartbeat touches must NOT bump this. Matches backend2.
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=wib_now)
     # Deploy signal: rows are born 'disconnect' (server default); the kiosk

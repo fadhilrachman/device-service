@@ -1,11 +1,13 @@
+from datetime import datetime
 from enum import Enum
 
 from sqlalchemy import Enum as SAEnum
-from sqlalchemy import JSON, String, Text
+from sqlalchemy import JSON, DateTime, String, Text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from database import Base
+from lib.time import wib_now
 from lib.utils import new_id
 from models.campaign_frame_template import campaign_frame_templates
 
@@ -37,6 +39,8 @@ class FrameTemplate(Base):
         default=PublishState.DRAFT,
         index=True,
     )
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=wib_now)
 
     campaigns: Mapped[list["Campaign"]] = relationship(
         "Campaign",
