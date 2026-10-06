@@ -426,7 +426,7 @@ with TestClient(app, headers=AUTH_HEADERS) as client:
         assert dev.storage_state == "free 12.4GB", dev.storage_state
         assert dev.camera_health == "connect", dev.camera_health
         assert dev.printer_health == "disconnect", dev.printer_health
-        assert dev.connectivity == "online", dev.connectivity
+        assert dev.connectivity == "connect", dev.connectivity
         assert dev.last_heartbeat is not None  # still stamped in DB, hidden from API responses
         assert dev.last_synced_at is not None
         cfg_device = body["changes"]["config"]["device"]
@@ -675,6 +675,66 @@ with TestClient(app, headers=AUTH_HEADERS) as client:
         assert row.connectivity == "connect", row.connectivity
         assert row.is_verified is True, row.is_verified
     ok("POST /auth/device/token/ success flips connectivity to connect + verified")
+
+    # 11c. Liveness middleware: GET success flips connect + stamps last_synced_at.
+    with remote_session() as db:
+        db.add(
+            Device(
+                id="test-device-live",
+                device_code="TEST-DEV-LIVE",
+                status="active",
+                connectivity="disconnect",
+            )
+        )
+        db.commit()
+    live_headers = {
+        "Authorization": f"Bearer {_make_token('live', 'live', 'TEST-DEV-LIVE')}"
+    }
+    r = client.get("/devices/me", headers=live_headers)
+    assert r.status_code == 200, r.text
+    with remote_session() as db:
+        row = db.get(Device, "test-device-live")
+        assert row.connectivity == "connect", row.connectivity
+        assert row.last_synced_at is not None
+    ok("GET marks connectivity connect + stamps last_synced_at")
+
+    # write methods flip connect but never stamp last_synced_at.
+    with remote_session() as db:
+        row = db.get(Device, "test-device-live")
+        row.last_synced_at = None
+        db.commit()
+    r = client.patch("/devices/heartbeat", json={"storage_state": "ok"}, headers=live_headers)
+    assert r.status_code == 200, r.text
+    with remote_session() as db:
+        row = db.get(Device, "test-device-live")
+        assert row.connectivity == "connect", row.connectivity
+        assert row.last_synced_at is None, row.last_synced_at
+    ok("write methods flip connect without stamping last_synced_at")
+
+    # status_trigger neither stamps.
+    r = client.get("/devices/sync/status_trigger", headers=live_headers)
+    assert r.status_code == 200, r.text
+    with remote_session() as db:
+        assert db.get(Device, "test-device-live").last_synced_at is None
+    ok("GET status_trigger skips last_synced_at stamp")
+
+    # errors flip connectivity to error and log the API path.
+    r = client.get("/sessions/does-not-exist", headers=live_headers)
+    assert r.status_code == 404, r.text
+    with remote_session() as db:
+        row = db.get(Device, "test-device-live")
+        assert row.connectivity == "error", row.connectivity
+        err = (
+            db.query(DeviceSyncLog)
+            .filter(
+                DeviceSyncLog.device_id == "test-device-live",
+                DeviceSyncLog.trigger == "api",
+            )
+            .order_by(DeviceSyncLog.started_at.desc())
+            .first()
+        )
+        assert err is not None and "/sessions/does-not-exist" in (err.error or ""), err
+    ok("error responses flip connectivity to error and log the path")
 
     # 12. WhatsApp send (WAHA free text + image), WAHA itself is faked out
     import config as svc_config
