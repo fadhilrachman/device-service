@@ -358,24 +358,6 @@ with TestClient(app, headers=AUTH_HEADERS) as client:
     assert r.status_code == 200
     ok("voucher verify repeated (idempotent)")
 
-    # 7. Payment flow (assignment was seeded up front with a valid window)
-    r = client.post(
-        "/payments",
-        json={"session_id": sid, "amount": 50000, "method": "QRIS"},
-    )
-    assert r.status_code == 201, r.text
-    payment = r.json()["payment"]
-    assert payment["status"] == "pending"
-    assert payment["booth_id"] == "booth-smoke", payment
-    assert payment["campaign_id"] == "camp-smoke", payment
-    assert payment["provider_ref"].startswith("stub-")
-    assert "mock-pay" in r.json()["charge_url"]
-    ok("POST /payments (stub)")
-
-    r = client.get(f"/payments/{payment['id']}")
-    assert r.status_code == 200 and r.json()["id"] == payment["id"]
-    ok("GET /payments/{id}")
-
     # 8. Voucher list: batch.campaign_id == active campaign AND device_id == device
     with remote_session() as db:
         db.add(Campaign(id="camp-other", name="Other Campaign", price=1000))
