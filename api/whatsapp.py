@@ -4,39 +4,39 @@ from sqlalchemy.orm import Session
 from config import whatsapp_configured
 from database import get_db
 from lib.device_identity import require_request_device_id
-from lib.whatsapp import WhatsAppClient, WhatsAppError, normalize_recipient
+from lib.waha import WahaClient, WahaError
+from lib.whatsapp import normalize_recipient
 from schemas.whatsapp import WhatsAppSendRequest, WhatsAppSendResponse
 
 router = APIRouter(prefix="/whatsapp", tags=["whatsapp"])
 
 
-def get_whatsapp_client() -> WhatsAppClient:
-    """Swappable seam: tests override this instead of calling Twilio."""
-    return WhatsAppClient()
+def get_whatsapp_client() -> WahaClient:
+    """Swappable seam: tests override this instead of calling WAHA."""
+    return WahaClient()
 
 
 @router.post(
     "/send",
     response_model=WhatsAppSendResponse,
     status_code=status.HTTP_201_CREATED,
-    summary="Send the WhatsApp content template to a visitor",
+    summary="Send a WhatsApp message to a visitor",
     description=(
-        "Send the approved Twilio WhatsApp content template configured for this deployment "
-        "(TWILIO_WHATSAPP_CONTENT_SID) from TWILIO_WHATSAPP_FROM. Device comes from the Bearer "
-        "token and is echoed back for audit. The message body is fixed by the template; only the "
-        "placeholder values travel in content_variables."
+        "Send free-form text (plus an optional image) through the configured "
+        "WAHA session (WAHA_SESSION). Device comes from the Bearer "
+        "token and is echoed back for audit."
     ),
     responses={
-        400: {"description": "to is not a valid WhatsApp address"},
+        400: {"description": "to is not a valid WhatsApp address, or text is empty"},
         401: {"description": "Missing or unknown client_id claim in the access token"},
-        502: {"description": "Twilio rejected the send or is unreachable"},
-        503: {"description": "WhatsApp is not configured (missing credentials or SDK)"},
+        502: {"description": "WAHA rejected the send or is unreachable"},
+        503: {"description": "WhatsApp is not configured (missing WAHA base URL or API key)"},
     },
 )
 def send_whatsapp_message(
     payload: WhatsAppSendRequest,
     request: Request,
-    client: WhatsAppClient = Depends(get_whatsapp_client),
+    client: WahaClient = Depends(get_whatsapp_client),
     db: Session = Depends(get_db),
 ):
     device_id = require_request_device_id(db, request)
@@ -47,12 +47,15 @@ def send_whatsapp_message(
     if not whatsapp_configured():
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="WhatsApp is not configured: TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN are missing.",
+            detail="WhatsApp is not configured: WAHA_BASE_URL / WAHA_API_KEY are missing.",
         )
     try:
-        result = client.send_template(to, payload.content_variables)
-    except WhatsAppError as exc:
-        # Upstream 4xx means our request/template is wrong (502 for the kiosk:
+        if payload.image_url:
+            result = client.send_image(to, payload.image_url, payload.text)
+        else:
+            result = client.send_text(to, payload.text)
+    except WahaError as exc:
+        # Upstream 4xx means our request is wrong (502 for the kiosk:
         # it is not the caller's fault and it must not retry blindly).
         upstream = exc.status_code or 0
         code = (
@@ -65,6 +68,6 @@ def send_whatsapp_message(
         message_sid=result.get("sid"),
         status=result.get("status"),
         to=result.get("to") or to,
-        from_number=result.get("from") or client.from_address,
+        from_number=result.get("from") or client.session,
         device_id=device_id,
     )

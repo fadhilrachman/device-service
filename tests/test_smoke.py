@@ -694,92 +694,111 @@ with TestClient(app, headers=AUTH_HEADERS) as client:
         assert row.is_verified is True, row.is_verified
     ok("POST /auth/device/token/ success flips connectivity to connect + verified")
 
-    # 12. WhatsApp send (Twilio content template), Twilio itself is faked out
+    # 12. WhatsApp send (WAHA free text + image), WAHA itself is faked out
     import config as svc_config
     from api.whatsapp import get_whatsapp_client
-    from lib.whatsapp import WhatsAppClient, WhatsAppError, normalize_recipient
+    from lib.waha import WahaClient, WahaError, to_chat_id
+    from lib.whatsapp import normalize_recipient
 
     sent = {}
 
-    class FakeWhatsAppClient:
-        from_address = "whatsapp:+17372508034"
+    class FakeWahaClient:
+        session = "default"
 
         def __init__(self, error=None):
             self.error = error
 
-        def send_template(self, to, content_variables=None):
+        def send_text(self, to, text):
             if self.error is not None:
                 raise self.error
             sent.clear()
-            sent.update({"to": to, "content_variables": content_variables})
-            return {"sid": "SM_FAKE", "status": "queued", "to": to, "from": self.from_address}
+            sent.update({"kind": "text", "to": to, "text": text})
+            return {"sid": "WA_FAKE", "status": "sent", "to": to, "from": self.session}
 
-    svc_config.TWILIO_ACCOUNT_SID = "AC-test"
-    svc_config.TWILIO_AUTH_TOKEN = "token-test"
-    app.dependency_overrides[get_whatsapp_client] = lambda: FakeWhatsAppClient()
+        def send_image(self, to, image_url, caption=None):
+            if self.error is not None:
+                raise self.error
+            sent.clear()
+            sent.update({"kind": "image", "to": to, "image_url": image_url, "caption": caption})
+            return {"sid": "WA_FAKE_IMG", "status": "sent", "to": to, "from": self.session}
+
+    svc_config.WAHA_BASE_URL = "https://waha.test"
+    svc_config.WAHA_API_KEY = "key-test"
+    app.dependency_overrides[get_whatsapp_client] = lambda: FakeWahaClient()
 
     r = client.post(
         "/whatsapp/send",
-        json={"to": "+62 881-0220 77883", "content_variables": {"1": "https://x/y.jpg"}},
+        json={"to": "+62 881-0220 77883", "text": "Your photo is ready!"},
     )
     assert r.status_code == 201, r.text
     body = r.json()
-    assert body["message_sid"] == "SM_FAKE" and body["status"] == "queued", body
+    assert body["message_sid"] == "WA_FAKE" and body["status"] == "sent", body
     assert body["to"] == "whatsapp:+62881022077883", body
-    assert body["from_number"] == "whatsapp:+17372508034", body
+    assert body["from_number"] == "default", body
     assert body["device_id"] == device_id, body
     assert sent == {
+        "kind": "text",
         "to": "whatsapp:+62881022077883",
-        "content_variables": {"1": "https://x/y.jpg"},
+        "text": "Your photo is ready!",
     }, sent
-    ok("POST /whatsapp/send normalizes the number and returns the Twilio sid")
+    ok("POST /whatsapp/send normalizes the number and returns the WAHA id")
 
-    r = client.post("/whatsapp/send", json={"to": "whatsapp:+62881022077883"})
-    assert r.status_code == 201 and sent["content_variables"] is None, r.text
-    ok("POST /whatsapp/send accepts the whatsapp: prefix and no variables")
+    r = client.post(
+        "/whatsapp/send",
+        json={
+            "to": "whatsapp:+62881022077883",
+            "text": "Here it is",
+            "image_url": "https://x/y.jpg",
+        },
+    )
+    assert r.status_code == 201 and r.json()["message_sid"] == "WA_FAKE_IMG", r.text
+    assert sent["kind"] == "image" and sent["image_url"] == "https://x/y.jpg", sent
+    ok("POST /whatsapp/send with image_url sends an image with caption")
 
     for bad in ["0811", "not-a-number", "whatsapp:+1234", "+62abc", ""]:
-        r = client.post("/whatsapp/send", json={"to": bad})
-        assert r.status_code == 400, (bad, r.status_code, r.text)
-    ok("POST /whatsapp/send rejects invalid WhatsApp addresses -> 400")
+        r = client.post("/whatsapp/send", json={"to": bad, "text": "hi"})
+        assert r.status_code in (400, 422), (bad, r.status_code, r.text)
+    r = client.post("/whatsapp/send", json={"to": "+62881022077883"})
+    assert r.status_code == 422, r.text
+    ok("POST /whatsapp/send rejects invalid numbers and missing text")
 
-    app.dependency_overrides[get_whatsapp_client] = lambda: FakeWhatsAppClient(
-        WhatsAppError("twilio unreachable", status_code=503)
+    app.dependency_overrides[get_whatsapp_client] = lambda: FakeWahaClient(
+        WahaError("waha unreachable", status_code=503)
     )
-    r = client.post("/whatsapp/send", json={"to": "+62881022077883"})
-    assert r.status_code == 502 and "twilio unreachable" in r.json()["detail"], r.text
-    app.dependency_overrides[get_whatsapp_client] = lambda: FakeWhatsAppClient(
-        WhatsAppError("content template not approved", status_code=400)
+    r = client.post("/whatsapp/send", json={"to": "+62881022077883", "text": "hi"})
+    assert r.status_code == 502 and "waha unreachable" in r.json()["detail"], r.text
+    app.dependency_overrides[get_whatsapp_client] = lambda: FakeWahaClient(
+        WahaError("chat not found", status_code=400)
     )
-    r = client.post("/whatsapp/send", json={"to": "+62881022077883"})
-    assert r.status_code == 400 and "not approved" in r.json()["detail"], r.text
-    ok("Twilio failures map to 502 (upstream 5xx) and 400 (upstream 4xx)")
+    r = client.post("/whatsapp/send", json={"to": "+62881022077883", "text": "hi"})
+    assert r.status_code == 400 and "chat not found" in r.json()["detail"], r.text
+    ok("WAHA failures map to 502 (upstream 5xx) and 400 (upstream 4xx)")
 
-    svc_config.TWILIO_ACCOUNT_SID = ""
-    svc_config.TWILIO_AUTH_TOKEN = ""
-    r = client.post("/whatsapp/send", json={"to": "+62881022077883"})
+    svc_config.WAHA_BASE_URL = ""
+    svc_config.WAHA_API_KEY = ""
+    r = client.post("/whatsapp/send", json={"to": "+62881022077883", "text": "hi"})
     assert r.status_code == 503, r.text
-    svc_config.TWILIO_ACCOUNT_SID = "AC-test"
-    svc_config.TWILIO_AUTH_TOKEN = "token-test"
+    svc_config.WAHA_BASE_URL = "https://waha.test"
+    svc_config.WAHA_API_KEY = "key-test"
     ok("POST /whatsapp/send without credentials -> 503")
 
     app.dependency_overrides.pop(get_whatsapp_client)
     r = client.post(
         "/whatsapp/send",
-        json={"to": "+62881022077883"},
+        json={"to": "+62881022077883", "text": "hi"},
         headers={"Authorization": f"Bearer {_make_token_no_device()}"},
     )
     assert r.status_code == 401, r.text
     ok("POST /whatsapp/send without client_id claim -> 401 (kiosk-only)")
 
     # client wiring reads env config and never touches the network on build
-    whatsapp_client = WhatsAppClient()
-    assert whatsapp_client.content_sid == svc_config.TWILIO_WHATSAPP_CONTENT_SID
-    assert whatsapp_client.from_address == svc_config.TWILIO_WHATSAPP_FROM
+    waha_client = WahaClient()
+    assert waha_client.session == "default"
+    assert to_chat_id("whatsapp:+62881022077883") == "62881022077883@c.us"
     assert normalize_recipient("whatsapp:+62881022077883") == "whatsapp:+62881022077883"
     assert normalize_recipient("+62 881-0220 77883") == "whatsapp:+62881022077883"
     assert "/whatsapp/send" in app.openapi()["paths"]
-    ok("WhatsAppClient wires from config; recipient normalization accepts +62/spacing")
+    ok("WahaClient wires from config; chat id conversion accepts +62/spacing")
 
 with TestClient(app) as client_no_auth:
     # operator-only endpoints reject requests without a Bearer token
