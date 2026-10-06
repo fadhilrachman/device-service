@@ -35,7 +35,11 @@ import json  # noqa: E402
 import time  # noqa: E402
 
 
-def _make_token(user_id: str = "test-device-1", device_id: str = "test-device-1") -> str:
+def _make_token(
+    user_id: str = "test-device-1",
+    device_id: str = "test-device-1",
+    client_id: str | None = "TEST-DEV-0001",
+) -> str:
     """Mint a structurally valid HS256-style JWT accepted by ProtectTokenMiddleware."""
     def _b64(data: dict) -> str:
         raw = json.dumps(data).encode("utf-8")
@@ -47,6 +51,8 @@ def _make_token(user_id: str = "test-device-1", device_id: str = "test-device-1"
         "iat": 0,
         "exp": int(time.time()) + 3600,
     }
+    if client_id is not None:
+        payload["client_id"] = client_id
     return f"{_b64(header)}.{_b64(payload)}.sig"
 
 
@@ -117,21 +123,21 @@ with TestClient(app, headers=AUTH_HEADERS) as client:
     assert me["status"] == "active"
     ok("GET /devices/me")
 
-    # token without device_id claim -> 401 (identity comes from the token)
+    # token without client_id claim -> 401 (identity comes from the token)
     r = client.get(
         "/devices/me",
         headers={"Authorization": f"Bearer {_make_token_no_device()}"},
     )
-    assert r.status_code == 401 and "device_id" in r.json()["detail"], r.text
-    ok("GET /devices/me without device_id claim -> 401")
+    assert r.status_code == 401 and "client_id" in r.json()["detail"], r.text
+    ok("GET /devices/me without client_id claim -> 401")
 
-    # token device_id that is not registered -> 404
+    # token client_id that is not registered -> 401
     r = client.get(
         "/devices/me",
-        headers={"Authorization": f"Bearer {_make_token('ghost', 'ghost-device')}"},
+        headers={"Authorization": f"Bearer {_make_token('ghost', 'ghost-device', 'GHOST-DEV')}"},
     )
-    assert r.status_code == 404, r.text
-    ok("GET /devices/me unregistered token device -> 404")
+    assert r.status_code == 401 and "Unknown device" in r.json()["detail"], r.text
+    ok("GET /devices/me unregistered token client_id -> 401")
 
     # 3. Heartbeat
     r = client.patch("/devices/heartbeat", json={"storage_state": "ok", "camera_health": "ok"})
@@ -764,7 +770,7 @@ with TestClient(app, headers=AUTH_HEADERS) as client:
         headers={"Authorization": f"Bearer {_make_token_no_device()}"},
     )
     assert r.status_code == 401, r.text
-    ok("POST /whatsapp/send without device_id claim -> 401 (kiosk-only)")
+    ok("POST /whatsapp/send without client_id claim -> 401 (kiosk-only)")
 
     # client wiring reads env config and never touches the network on build
     whatsapp_client = WhatsAppClient()

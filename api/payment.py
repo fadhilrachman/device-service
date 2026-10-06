@@ -47,7 +47,7 @@ def _resolve_amount(db: Session, campaign_id: str | None, amount: float | None) 
 
 @router.post("", response_model=PaymentCreateResponse, status_code=status.HTTP_201_CREATED)
 def create_payment(payload: PaymentCreate, request: Request, db: Session = Depends(get_db)):
-    device_id = require_request_device_id(request)
+    device_id = require_request_device_id(db, request)
     if not db.get(Device, device_id):
         raise HTTPException(status_code=404, detail="Device not found.")
 
@@ -265,7 +265,7 @@ def cancel_payment(id: str, request: Request, db: Session = Depends(get_db)):
 
 @router.get("", response_model=dict)
 def list_payments(request: Request, limit: int = 20, db: Session = Depends(get_db)):
-    device_id = require_request_device_id(request)
+    device_id = require_request_device_id(db, request)
     items = (
         db.query(Payment)
         .filter(Payment.device_id == device_id)

@@ -81,10 +81,11 @@ class ProtectTokenMiddleware(BaseHTTPMiddleware):
 
         # request.state.sso_user_id = user_id
         request.state.sso_org_id = payload.get("org_id")
-        # Device identity comes from the token itself (claim device_id, the
-        # Neon devices.id). Operator tokens have no such claim; endpoints that
-        # need a device enforce it via lib.device_identity instead of here.
-        request.state.sso_device_id = payload.get("device_id")
+        # Device identity comes from the token itself (claim client_id, which
+        # matches Neon devices.device_code). Operator tokens have no such
+        # claim; endpoints that need a device enforce it via
+        # lib.device_identity instead of here.
+        request.state.sso_client_id = payload.get("client_id")
         request.state.sso_token_header = header
         request.state.sso_token_payload = payload
         request.state.sso_access_token = authorization_parts[1]

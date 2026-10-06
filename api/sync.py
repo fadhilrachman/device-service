@@ -402,12 +402,12 @@ def _pull_changes(db: Session, device: Device, campaign: Campaign | None) -> Bul
     ),
     responses={
         400: {"description": "Empty payload (no records and no device fields), over 200 items, or validation error"},
-        401: {"description": "Missing device_id claim in the access token"},
+        401: {"description": "Missing or unknown client_id claim in the access token"},
         404: {"description": "Device not found"},
     },
 )
 def bulk_sync(payload: BulkSyncRequest, request: Request, db: Session = Depends(get_db)):
-    device_id = require_request_device_id(request)
+    device_id = require_request_device_id(db, request)
     device = db.get(Device, device_id)
     if device is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Device not found.")

@@ -1,6 +1,8 @@
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from sqlalchemy.orm import Session
 
 from config import whatsapp_configured
+from database import get_db
 from lib.device_identity import require_request_device_id
 from lib.whatsapp import WhatsAppClient, WhatsAppError, normalize_recipient
 from schemas.whatsapp import WhatsAppSendRequest, WhatsAppSendResponse
@@ -26,7 +28,7 @@ def get_whatsapp_client() -> WhatsAppClient:
     ),
     responses={
         400: {"description": "to is not a valid WhatsApp address"},
-        401: {"description": "Missing device_id claim in the access token"},
+        401: {"description": "Missing or unknown client_id claim in the access token"},
         502: {"description": "Twilio rejected the send or is unreachable"},
         503: {"description": "WhatsApp is not configured (missing credentials or SDK)"},
     },
@@ -35,8 +37,9 @@ def send_whatsapp_message(
     payload: WhatsAppSendRequest,
     request: Request,
     client: WhatsAppClient = Depends(get_whatsapp_client),
+    db: Session = Depends(get_db),
 ):
-    device_id = require_request_device_id(request)
+    device_id = require_request_device_id(db, request)
     try:
         to = normalize_recipient(payload.to)
     except ValueError as exc:

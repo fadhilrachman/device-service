@@ -27,7 +27,7 @@ def plug_camera_and_printer(
     The device is taken from the Bearer token claim, never the body. Each
     provided name creates a fresh profile; missing names are skipped.
     """
-    device = db.get(Device, require_request_device_id(request))
+    device = db.get(Device, require_request_device_id(db, request))
     if device is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Device not found.")
 

@@ -152,7 +152,7 @@ def _write_log(db: Session, db_obj: SessionModel, device: Device | None, reason:
 
 @router.post("", response_model=SessionResponse, status_code=status.HTTP_201_CREATED)
 def create_session(payload: SessionCreate, request: Request, db: Session = Depends(get_db)):
-    device_id = require_request_device_id(request)
+    device_id = require_request_device_id(db, request)
     device = db.get(Device, device_id)
     if not device:
         raise HTTPException(status_code=404, detail="Device not found.")
@@ -209,7 +209,7 @@ def list_sessions(request: Request, limit: int = 20, db: Session = Depends(get_d
     items = (
         db.query(SessionModel)
         .options(selectinload(SessionModel.device_logs))
-        .filter(SessionModel.device_id == require_request_device_id(request))
+        .filter(SessionModel.device_id == require_request_device_id(db, request))
         .order_by(SessionModel.created_at.desc())
         .limit(limit)
         .all()

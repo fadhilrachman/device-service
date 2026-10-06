@@ -67,7 +67,7 @@ def _make_token(payload_extra: dict | None = None) -> str:
 
 
 ORG_HEADERS = {
-    "Authorization": f"Bearer {_make_token({'org_id': 'org-111', 'tenant_id': 'ten-222', 'device_id': 'dev-commerce-1'})}"
+    "Authorization": f"Bearer {_make_token({'org_id': 'org-111', 'tenant_id': 'ten-222', 'device_id': 'dev-commerce-1', 'client_id': 'TEST-COMMERCE-01'})}"
 }
 
 # ---- fake Commerce HTTP -------------------------------------------------
@@ -363,8 +363,8 @@ with TestClient(app, headers=ORG_HEADERS) as tclient:
         row.booth_id = "booth-1"
         db.commit()
 
-    # token without org claim -> 400 (device_id present so identity passes)
-    no_org = {"Authorization": f"Bearer {_make_token({'device_id': 'dev-commerce-1'})}"}
+    # token without org claim -> 400 (client_id present so identity passes)
+    no_org = {"Authorization": f"Bearer {_make_token({'device_id': 'dev-commerce-1', 'client_id': 'TEST-COMMERCE-01'})}"}
     r = tclient.post("/payments", json={"amount": 10000}, headers=no_org)
     assert r.status_code == 400 and "organization_id" in r.json()["detail"], r.text
     ok("POST /payments without org claim -> 400")

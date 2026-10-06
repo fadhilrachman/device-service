@@ -36,6 +36,7 @@ def _make_token() -> str:
     payload = {
         "user_id": "test-device-1",
         "device_id": "dev-assigned-1",
+        "client_id": "TEST-ASSIGN-01",
         "iat": 0,
         "exp": int(time.time()) + 3600,
     }

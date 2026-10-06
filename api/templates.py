@@ -11,5 +11,5 @@ router = APIRouter(prefix="/templates", tags=["templates"])
 
 @router.get("", response_model=list[FrameTemplateResponse])
 def list_templates(request: Request, db: Session = Depends(get_db)):
-    campaign = _active_campaign(db, require_request_device_id(request))
+    campaign = _active_campaign(db, require_request_device_id(db, request))
     return _resolve_frames(db, campaign)

@@ -33,7 +33,7 @@ def get_config(request: Request, db: Session = Depends(get_db)):
     Assignment data (assignment/booth/campaign) is intentionally excluded;
     clients get it from GET /devices/me or GET /config/campaign instead.
     """
-    device_id = require_request_device_id(request)
+    device_id = require_request_device_id(db, request)
     device = db.get(Device, device_id)
 
     camera = (
@@ -70,7 +70,7 @@ def get_config(request: Request, db: Session = Depends(get_db)):
 
 @router.get("/campaign", response_model=CampaignConfigResponse)
 def get_campaign(request: Request, db: Session = Depends(get_db)):
-    campaign = _active_campaign(db, require_request_device_id(request))
+    campaign = _active_campaign(db, require_request_device_id(db, request))
     if not campaign:
         raise HTTPException(
             status_code=404,
@@ -85,7 +85,7 @@ def get_campaign(request: Request, db: Session = Depends(get_db)):
 
 @router.get("/profiles", response_model=dict)
 def get_profiles(request: Request, db: Session = Depends(get_db)):
-    device = db.get(Device, require_request_device_id(request))
+    device = db.get(Device, require_request_device_id(db, request))
     camera = (
         db.get(CameraProfile, device.camera_profile_id)
         if device and device.camera_profile_id
