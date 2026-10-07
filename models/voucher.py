@@ -21,6 +21,10 @@ class Voucher(Base):
     issued_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=wib_now)
+    # Column already exists in the shared schema (backend2 owns it and writes it
+    # on every voucher change). It was missing here, which made "changed since
+    # devices.last_synced_at" impossible to express in the ORM.
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=wib_now, onupdate=wib_now)
 
     batch: Mapped["VoucherBatch"] = relationship("VoucherBatch", back_populates="vouchers")
     session: Mapped["SessionModel | None"] = relationship("SessionModel")

@@ -24,12 +24,12 @@ def list_vouchers(request: Request, limit: int = 100, offset: int = 0, db: Sessi
     """List vouchers for the calling device's active campaign.
 
     Both filters come from the access token, never from query params:
-    ``vouchers.device_id`` must equal the token ``device_id`` claim and the
+    ``vouchers.device_id`` must equal the device resolved from the token ``client_id`` claim and the
     voucher's batch must belong to the device's active campaign (resolved via
     its active assignment -> booth -> campaign). For the kiosk to download its
     voucher data locally.
     """
-    device_id = require_request_device_id(request)
+    device_id = require_request_device_id(db, request)
     campaign = _active_campaign(db, device_id)
     if not campaign:
         raise HTTPException(

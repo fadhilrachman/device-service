@@ -14,7 +14,17 @@ load_dotenv()
 connect_args = (
     {"connect_timeout": 5} if REMOTE_DATABASE_URL.startswith("postgresql") else {}
 )
-remote_engine = create_engine(REMOTE_DATABASE_URL, connect_args=connect_args)
+# Neon closes idle serverless connections, and its pooler can drop a socket that
+# has been open too long, which surfaces as "server closed the connection
+# unexpectedly" in the middle of a request. pool_pre_ping validates a pooled
+# connection before it is handed out, and pool_recycle retires connections well
+# before the server would drop them, so a stale socket is never used for a query.
+remote_engine = create_engine(
+    REMOTE_DATABASE_URL,
+    connect_args=connect_args,
+    pool_pre_ping=True,
+    pool_recycle=240,
+)
 
 remote_session = sessionmaker(autocommit=False, autoflush=False, bind=remote_engine)
 

@@ -7,6 +7,7 @@ from api.config import _resolve_frames
 from database import get_db
 from lib.device_assignment import get_valid_assignment
 from lib.device_identity import require_request_device_id
+from lib.utils import new_session_code
 from models.booth import Booth
 from models.camera_profile import CameraProfile
 from models.campaign import Campaign
@@ -151,7 +152,7 @@ def _write_log(db: Session, db_obj: SessionModel, device: Device | None, reason:
 
 @router.post("", response_model=SessionResponse, status_code=status.HTTP_201_CREATED)
 def create_session(payload: SessionCreate, request: Request, db: Session = Depends(get_db)):
-    device_id = require_request_device_id(request)
+    device_id = require_request_device_id(db, request)
     device = db.get(Device, device_id)
     if not device:
         raise HTTPException(status_code=404, detail="Device not found.")
@@ -168,7 +169,19 @@ def create_session(payload: SessionCreate, request: Request, db: Session = Depen
     booth_id = assignment.booth_id
     campaign_id = booth.campaign_id if booth else None
 
+    code = None
+    for _ in range(6):
+        candidate = new_session_code()
+        if not db.query(SessionModel.id).filter(SessionModel.code == candidate).first():
+            code = candidate
+            break
+    if code is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Unable to allocate a unique session code at this time.",
+        )
     db_obj = SessionModel(
+        code=code,
         campaign_id=campaign_id,
         booth_id=booth_id,
         device_id=device.id,
@@ -196,7 +209,7 @@ def list_sessions(request: Request, limit: int = 20, db: Session = Depends(get_d
     items = (
         db.query(SessionModel)
         .options(selectinload(SessionModel.device_logs))
-        .filter(SessionModel.device_id == require_request_device_id(request))
+        .filter(SessionModel.device_id == require_request_device_id(db, request))
         .order_by(SessionModel.created_at.desc())
         .limit(limit)
         .all()

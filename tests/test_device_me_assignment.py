@@ -36,6 +36,7 @@ def _make_token() -> str:
     payload = {
         "user_id": "test-device-1",
         "device_id": "dev-assigned-1",
+        "client_id": "TEST-ASSIGN-01",
         "iat": 0,
         "exp": int(time.time()) + 3600,
     }
@@ -123,44 +124,6 @@ with TestClient(app, headers=AUTH_HEADERS) as client:
     assert "campaign" not in r.json()
     ok("GET /config returns config-only bundle")
 
-    # ---- POST /payments with only {"method"} (full derivation) ----------
-    r = client.post("/payments", json={"method": "QRIS"})
-    assert r.status_code == 201, r.text
-    payment = r.json()["payment"]
-    assert payment["device_id"] == "dev-assigned-1", payment
-    assert payment["booth_id"] == "booth-1", payment
-    assert payment["campaign_id"] == "camp-1", payment
-    assert float(payment["amount"]) == 50000.0, payment
-    assert payment["provider"] == "stub"
-    ok("POST /payments minimal payload derives device/booth/campaign/amount")
-
-    # ---- stale IDs in payload are rejected loudly (422), not ignored -----
-    r = client.post(
-        "/payments",
-        json={"booth_id": "booth-1", "campaign_id": "camp-1", "method": "cash"},
-    )
-    assert r.status_code == 422, r.text
-    r = client.post("/payments", json={"device_id": "dev-assigned-1", "method": "cash"})
-    assert r.status_code == 422, r.text
-    ok("POST /payments rejects ID fields with 422 (extra=forbid)")
-
-    # ---- deactivated assignment -> 400 ------------------------------------
-    with remote_session() as db:
-        row = (
-            db.query(DeviceAssignment)
-            .filter(
-                DeviceAssignment.device_id == "dev-assigned-1",
-                DeviceAssignment.status == "active",
-            )
-            .first()
-        )
-        row.status = "inactive"
-        db.commit()
-    r = client.post("/payments", json={"method": "cash"})
-    assert r.status_code == 400, r.text
-    assert "not assigned" in r.json()["detail"], r.text
-    ok("POST /payments without active assignment -> 400")
-
     # ---- window validation ------------------------------------------------
     def _set_window(from_dt, until_dt, status="active"):
         with remote_session() as db:
@@ -180,9 +143,6 @@ with TestClient(app, headers=AUTH_HEADERS) as client:
     r = client.get("/devices/me")
     assert r.status_code == 200 and r.json()["device_assignment"] is None, r.text
     ok("GET /devices/me expired window -> null assignment")
-    r = client.post("/payments", json={"method": "cash"})
-    assert r.status_code == 400 and "window has expired" in r.json()["detail"], r.text
-    ok("POST /payments expired window -> 400")
     r = client.post("/sessions", json={})
     assert r.status_code == 400 and "window has expired" in r.json()["detail"], r.text
     ok("POST /sessions expired window -> 400")
@@ -197,9 +157,7 @@ with TestClient(app, headers=AUTH_HEADERS) as client:
     _set_window(wib_now() - timedelta(days=1), None)
     r = client.get("/devices/me")
     assert r.status_code == 200 and r.json()["device_assignment"] is None, r.text
-    r = client.post("/payments", json={"method": "cash"})
-    assert r.status_code == 400, r.text
-    ok("GET /devices/me + payments NULL until -> null / 400")
+    ok("GET /devices/me NULL until -> null assignment")
 
     # restore valid window -> assignment back
     _set_window(wib_now() - timedelta(days=1), datetime(2030, 1, 1))

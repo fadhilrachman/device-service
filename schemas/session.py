@@ -35,6 +35,7 @@ class SessionPaymentUpdate(BaseModel):
 class SessionResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: str
+    code: Optional[str] = None
     campaign_id: Optional[str] = None
     booth_id: Optional[str] = None
     device_id: Optional[str] = None

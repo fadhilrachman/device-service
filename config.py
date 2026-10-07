@@ -37,6 +37,21 @@ COMMERCE_FAILURE_URL = os.getenv(
 )
 
 
+# ===== WAHA WhatsApp (replaces Twilio) =====
+# Free-form text + optional image via the WAHA HTTP API. The sending number is
+# whichever account holds the WAHA session; credentials live in .env only
+# (see .env.example for the variable list).
+WAHA_BASE_URL = os.getenv("WAHA_BASE_URL", "").rstrip("/")
+WAHA_API_KEY = os.getenv("WAHA_API_KEY", "").strip()
+WAHA_SESSION = os.getenv("WAHA_SESSION", "default").strip() or "default"
+WAHA_TIMEOUT_SECONDS = float(os.getenv("WAHA_TIMEOUT_SECONDS", "20"))
+
+
+def whatsapp_configured() -> bool:
+    """True when the WhatsApp sender can be built (base URL + API key present)."""
+    return bool(WAHA_BASE_URL and WAHA_API_KEY)
+
+
 def get_commerce_offers() -> dict:
     """Parse COMMERCE_OFFERS_JSON: {campaign_id: {product, plan, price, description?}}.
 

@@ -50,19 +50,19 @@ def _get_device_or_404(db: Session, device_id: str) -> Device:
 
 @router.get("/me", response_model=DeviceResponse)
 def get_me(request: Request, db: Session = Depends(get_db)):
-    return _me_response(db, _get_device_or_404(db, require_request_device_id(request)))
+    return _me_response(db, _get_device_or_404(db, require_request_device_id(db, request)))
 
 
 @router.get("/sync/status_trigger", response_model=DeviceSyncStatusTriggerResponse)
 def get_sync_status_trigger(request: Request, db: Session = Depends(get_db)):
     """Read-only sync flag for the caller (device id from token claim)."""
-    device = _get_device_or_404(db, require_request_device_id(request))
+    device = _get_device_or_404(db, require_request_device_id(db, request))
     return {"is_sync_status_trigger": bool(device.is_sync_status)}
 
 
 @router.patch("/heartbeat", response_model=DeviceResponse)
 def heartbeat(payload: DeviceHeartbeatRequest, request: Request, db: Session = Depends(get_db)):
-    device = _get_device_or_404(db, require_request_device_id(request))
+    device = _get_device_or_404(db, require_request_device_id(db, request))
 
     now = wib_now()
     device.last_seen_at = now

@@ -38,8 +38,6 @@ class DeviceResponse(BaseModel):
     camera_profile_id: Optional[str] = None
     printer_profile_id: Optional[str] = None
     app_version: Optional[str] = None
-    last_seen_at: object = None
-    last_heartbeat: object = None
     last_synced_at: object = None
     connectivity: Optional[str] = None
     storage_state: Optional[str] = None

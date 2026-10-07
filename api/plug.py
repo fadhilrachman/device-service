@@ -3,6 +3,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from database import get_db
+from lib.device_conflict import device_conflict
 from lib.device_identity import require_request_device_id
 from models.camera_profile import CameraProfile
 from models.device import Device
@@ -26,7 +27,7 @@ def plug_camera_and_printer(
     The device is taken from the Bearer token claim, never the body. Each
     provided name creates a fresh profile; missing names are skipped.
     """
-    device = db.get(Device, require_request_device_id(request))
+    device = db.get(Device, require_request_device_id(db, request))
     if device is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Device not found.")
 
@@ -52,12 +53,9 @@ def plug_camera_and_printer(
         device.printer_profile_id = printer.id
     try:
         db.commit()
-    except IntegrityError:
+    except IntegrityError as exc:
         db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Camera or printer profile is already in use.",
-        )
+        raise device_conflict(exc)
     db.refresh(device)
     if camera is not None:
         db.refresh(camera)
