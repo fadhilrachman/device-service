@@ -7,6 +7,7 @@ from fastapi import Depends, FastAPI
 from fastapi.security import HTTPBearer
 
 from api import auth_device as auth_device_api
+from api import campaigns as campaigns_api
 from api import config as config_api
 from api import device as device_api
 from api import plug as plug_api, session, sync as sync_api, templates, upload as upload_api, voucher, whatsapp as whatsapp_api
@@ -42,6 +43,7 @@ app.add_middleware(ProtectTokenMiddleware)
 
 app.add_exception_handler(BadRequestError, bad_request_exception_handler)
 
+app.include_router(campaigns_api.router)
 app.include_router(config_api.router)
 app.include_router(device_api.router)
 app.include_router(plug_api.router)

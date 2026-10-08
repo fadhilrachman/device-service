@@ -50,11 +50,12 @@ def list_vouchers(request: Request, limit: int = 100, offset: int = 0, db: Sessi
 def redeem_voucher(
     code: str, payload: VoucherRedeemRequest, db: Session = Depends(get_db)
 ):
-    if not db.get(SessionModel, payload.session_id):
+    session = db.get(SessionModel, payload.session_id)
+    if not session or session.deleted_at is not None:
         raise HTTPException(status_code=404, detail="Session not found.")
 
     voucher = db.query(Voucher).filter(Voucher.code == code).first()
-    if not voucher:
+    if not voucher or voucher.deleted_at is not None:
         raise HTTPException(status_code=404, detail="Voucher not found.")
 
     now = wib_now()

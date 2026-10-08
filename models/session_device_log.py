@@ -4,6 +4,7 @@ from sqlalchemy import String, DateTime, Text, ForeignKey
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from database import Base
+from lib.soft_delete import deleted_at_column
 from lib.time import wib_now
 from lib.utils import new_id
 
@@ -23,6 +24,7 @@ class SessionDeviceLog(Base):
     frame_template_name: Mapped[str | None] = mapped_column(Text, nullable=True)
     reason: Mapped[str] = mapped_column(String(40), default="created")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=wib_now)
+    deleted_at: Mapped[datetime | None] = deleted_at_column()
 
     session: Mapped["SessionModel"] = relationship("SessionModel", back_populates="device_logs")
     device: Mapped["Device | None"] = relationship("Device")

@@ -80,22 +80,25 @@ def _session_campaign(
 ) -> Campaign | None:
     if device is None and session.device_id:
         device = db.get(Device, session.device_id)
-    if not device:
+    if not device or device.deleted_at is not None:
         return None
     assignment = get_valid_assignment(db, device.id)
     if not assignment:
         return None
     booth = db.get(Booth, assignment.booth_id)
-    if not booth or not booth.campaign_id:
+    if not booth or booth.deleted_at is not None or not booth.campaign_id:
         return None
-    return db.get(Campaign, booth.campaign_id)
+    campaign = db.get(Campaign, booth.campaign_id)
+    if campaign is None or campaign.deleted_at is not None:
+        return None
+    return campaign
 
 
 def _apply_frame(
     db: Session, session: SessionModel, frame_id: str, device: Device | None
 ) -> None:
     frame = db.get(FrameTemplate, frame_id)
-    if not frame or frame.publish_state is not PublishState.PUBLIC:
+    if not frame or frame.deleted_at is not None or frame.publish_state is not PublishState.PUBLIC:
         raise HTTPException(status_code=400, detail="Frame template is not available.")
     campaign = _session_campaign(db, session, device)
     allowed = {f.id for f in _resolve_frames(db, campaign)}
@@ -154,7 +157,7 @@ def _write_log(db: Session, db_obj: SessionModel, device: Device | None, reason:
 def create_session(payload: SessionCreate, request: Request, db: Session = Depends(get_db)):
     device_id = require_request_device_id(db, request)
     device = db.get(Device, device_id)
-    if not device:
+    if not device or device.deleted_at is not None:
         raise HTTPException(status_code=404, detail="Device not found.")
     if device.status != "active":
         raise HTTPException(status_code=409, detail="Device is not active.")
@@ -166,6 +169,11 @@ def create_session(payload: SessionCreate, request: Request, db: Session = Depen
             detail="Device is not assigned: no active assignment or the assignment window has expired.",
         )
     booth = db.get(Booth, assignment.booth_id)
+    if booth is None or booth.deleted_at is not None:
+        raise HTTPException(
+            status_code=400,
+            detail="Device is not assigned: no active assignment or the assignment window has expired.",
+        )
     booth_id = assignment.booth_id
     campaign_id = booth.campaign_id if booth else None
 
@@ -240,7 +248,7 @@ def update_session(id: str, payload: SessionUpdate, db: Session = Depends(get_db
     try:
         if payload.device_id and payload.device_id != old_device_id:
             device = db.get(Device, payload.device_id)
-            if not device:
+            if not device or device.deleted_at is not None:
                 raise HTTPException(status_code=404, detail="Device not found.")
             _write_log(db, db_obj, device, "device_swap")
         db.commit()

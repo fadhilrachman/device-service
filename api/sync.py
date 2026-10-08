@@ -79,15 +79,18 @@ def _resolve_frame(db: Session, frame_id: str | None) -> str | None:
         return None
     if frame_id.startswith("frm_"):
         return None  # kiosk-local frame, not a server row
-    if not db.get(FrameTemplate, frame_id):
+    frame = db.get(FrameTemplate, frame_id)
+    if not frame or frame.deleted_at is not None:
         raise ValueError(f"frame_template {frame_id} not found")
     return frame_id
 
 
 def _checked_ref(db: Session, model, ref_id: str | None, label: str) -> str | None:
+    """Kiosk refs never resolve soft-deleted rows (treated as missing)."""
     if ref_id is None:
         return None
-    if not db.get(model, ref_id):
+    row = db.get(model, ref_id)
+    if not row or getattr(row, "deleted_at", None) is not None:
         raise ValueError(f"{label} {ref_id} not found")
     return ref_id
 
@@ -187,10 +190,35 @@ def _resolve_session_id(db: Session, device_id: str, session_ids: dict, session_
     return row.id
 
 
+# Kiosk vocabulary -> canonical payment statuses. The dashboard, reports and
+# refund flow only understand pending/succeeded/failed/refunded, so kiosk
+# words are translated here, once, instead of in every counting query.
+# Unknown words fail the item (the bulk loop isolates failures per item).
+KIOSK_PAYMENT_STATUS_MAP = {
+    "pending": "pending",
+    "paid": "succeeded",
+    "succeeded": "succeeded",
+    "failed": "failed",
+    "cancelled": "failed",
+    "refunded": "refunded",
+}
+
+
+def _canonical_payment_status(raw: str | None) -> str:
+    normalized = (raw or "pending").strip().lower()
+    try:
+        return KIOSK_PAYMENT_STATUS_MAP[normalized]
+    except KeyError:
+        raise ValueError(
+            f"unknown payment status {raw!r} (expected one of: {', '.join(sorted(KIOSK_PAYMENT_STATUS_MAP))})"
+        )
+
+
 def _upsert_payment(
     db: Session, device: Device, session_ids: dict, item
 ) -> tuple[str, bool]:
     session_id = _resolve_session_id(db, device.id, session_ids, item.session_local_id)
+    status = _canonical_payment_status(item.status)
     session_row = db.get(SessionModel, session_id)
     booth_id = _checked_ref(db, Booth, item.booth_id, "booth")
     if booth_id is None and session_row is not None:
@@ -213,7 +241,7 @@ def _upsert_payment(
             amount=float(item.amount),
             currency=item.currency,
             method=item.method,
-            status=item.status or "pending",
+            status=status,
             provider=item.provider,
             provider_ref=item.provider_ref,
             gateway_payload=item.gateway_payload,
@@ -234,7 +262,7 @@ def _upsert_payment(
     existing.currency = item.currency
     existing.method = item.method
     if item.status is not None:
-        existing.status = item.status
+        existing.status = status
     existing.provider = item.provider
     existing.provider_ref = item.provider_ref
     existing.gateway_payload = item.gateway_payload

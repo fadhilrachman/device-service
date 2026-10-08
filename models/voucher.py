@@ -4,6 +4,7 @@ from sqlalchemy import String, DateTime, ForeignKey
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from database import Base
+from lib.soft_delete import deleted_at_column
 from lib.time import wib_now
 from lib.utils import new_id
 
@@ -25,6 +26,7 @@ class Voucher(Base):
     # on every voucher change). It was missing here, which made "changed since
     # devices.last_synced_at" impossible to express in the ORM.
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=wib_now, onupdate=wib_now)
+    deleted_at: Mapped[datetime | None] = deleted_at_column()
 
     batch: Mapped["VoucherBatch"] = relationship("VoucherBatch", back_populates="vouchers")
     session: Mapped["SessionModel | None"] = relationship("SessionModel")

@@ -1,6 +1,7 @@
 from sqlalchemy import String, Integer, Boolean, DateTime
 from sqlalchemy.orm import Mapped, mapped_column
 from database import Base
+from lib.soft_delete import deleted_at_column
 from lib.time import wib_now
 from lib.utils import new_id
 from datetime import datetime
@@ -28,3 +29,4 @@ class CameraProfile(Base):
     capture_timeout: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=wib_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=wib_now, onupdate=wib_now)
+    deleted_at: Mapped[datetime | None] = deleted_at_column()

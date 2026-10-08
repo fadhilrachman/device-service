@@ -30,6 +30,27 @@ Copy-Item .env.example .env   # lalu isi REMOTE_DATABASE_URL
 uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
+## Migrasi database
+
+Skema database dimiliki tunggal oleh repo `backend2` (`backend2/migrations`).
+Repo ini **tidak** punya rantai Alembic sendiri — dua rantai migrasi pada
+satu DB yang sama akan berebut tabel `alembic_version`. Untuk mengubah skema:
+
+```powershell
+# di repo backend2
+.\.venv\Scripts\python.exe -m alembic upgrade head
+```
+
+Aturan sinkronisasi model cermin (`device-service/models/` memetakan tabel
+yang sama dengan `backend2/models/`):
+
+- Setiap kolom baru di backend2 (contoh: `deleted_at` soft-delete di 14 tabel,
+  revisi `a92d790c5262`) wajib ditambahkan juga ke model cermin di sini,
+  kalau tidak guard yang membacanya (`assignment.deleted_at`,
+  `booth.deleted_at`, …) akan `AttributeError`.
+- Jangan menambah tabel/kolom hanya dari repo ini — selalu lewat migrasi
+  backend2 agar `alembic_version` tetap satu head.
+
 ## Environment
 
 | Variable | Default | Keterangan |

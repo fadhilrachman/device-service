@@ -7,6 +7,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from database import Base
+from lib.soft_delete import deleted_at_column
 from lib.time import wib_now
 from lib.utils import new_id
 from models.campaign_frame_template import campaign_frame_templates
@@ -41,6 +42,7 @@ class FrameTemplate(Base):
     )
 
     created_at: Mapped[datetime] = mapped_column(DateTime, default=wib_now)
+    deleted_at: Mapped[datetime | None] = deleted_at_column()
 
     campaigns: Mapped[list["Campaign"]] = relationship(
         "Campaign",

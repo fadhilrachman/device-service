@@ -31,6 +31,11 @@ def is_assignment_window_valid(assignment: DeviceAssignment | None, now=None) ->
     """
     if assignment is None or assignment.status != "active":
         return False
+    if assignment.deleted_at is not None:
+        return False
+    booth = assignment.booth
+    if booth is not None and booth.deleted_at is not None:
+        return False
     if assignment.assigned_from is None or assignment.assigned_until is None:
         return False
     now = now or wib_now()
@@ -51,6 +56,7 @@ def get_valid_assignment(db: Session, device_id: str) -> DeviceAssignment | None
         .filter(
             DeviceAssignment.device_id == device_id,
             DeviceAssignment.status == "active",
+            DeviceAssignment.deleted_at.is_(None),
         )
         .order_by(DeviceAssignment.assigned_from.desc())
         .all()

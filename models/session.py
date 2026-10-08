@@ -3,6 +3,7 @@ from sqlalchemy import String, Integer, Boolean, DateTime, JSON, ForeignKey
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from database import Base
+from lib.soft_delete import deleted_at_column
 from lib.utils import new_id
 from lib.time import wib_now
 from datetime import datetime
@@ -52,6 +53,7 @@ class SessionModel(Base):
     offline: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=wib_now, index=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=wib_now, onupdate=wib_now)
+    deleted_at: Mapped[datetime | None] = deleted_at_column()
 
     device_logs: Mapped[list["SessionDeviceLog"]] = relationship(
         "SessionDeviceLog",

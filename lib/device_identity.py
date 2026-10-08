@@ -21,7 +21,7 @@ def require_request_device_id(db: Session, request: Request) -> str:
             detail="client_id claim is missing in the access token.",
         )
     device = db.query(Device).filter(Device.device_code == client_id.strip()).first()
-    if device is None:
+    if device is None or device.deleted_at is not None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Unknown device client_id in the access token.",

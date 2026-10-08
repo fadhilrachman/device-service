@@ -69,7 +69,7 @@ class BulkPaymentItem(BaseModel):
     amount: float = Field(description="Required. Stored as Numeric(12,2).")
     currency: str = Field(default="IDR", description="ISO currency code.")
     method: Optional[str] = Field(default=None, description="Free string, e.g. qris, voucher.")
-    status: Optional[str] = Field(default=None, description="Free string as recorded by kiosk, e.g. paid, cancelled. Defaults to pending.")
+    status: Optional[str] = Field(default=None, description="Kiosk word, canonicalized on ingest (paid->succeeded, cancelled->failed). Defaults to pending.")
     provider: Optional[str] = Field(default=None, description="Passthrough, e.g. xendit, stub.")
     provider_ref: Optional[str] = Field(default=None, description="Provider reference. Must be globally unique when sent.")
     gateway_payload: Optional[dict] = Field(default=None, description="Raw gateway payload passthrough from kiosk.")

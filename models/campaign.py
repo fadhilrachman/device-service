@@ -4,6 +4,7 @@ from datetime import datetime
 from sqlalchemy import String, Integer, Boolean, DateTime, JSON, ForeignKey, Numeric
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from database import Base
+from lib.soft_delete import deleted_at_column
 from lib.utils import new_id
 from models.campaign_frame_template import campaign_frame_templates
 
@@ -23,6 +24,7 @@ class Campaign(Base):
     frame_set: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     print_policy: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     delivery_policy: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    deleted_at: Mapped[datetime | None] = deleted_at_column()
 
     frame_templates: Mapped[list["FrameTemplate"]] = relationship(
         "FrameTemplate",

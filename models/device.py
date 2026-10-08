@@ -1,6 +1,7 @@
 from sqlalchemy import String, Integer, Boolean, DateTime, JSON, ForeignKey, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from database import Base
+from lib.soft_delete import deleted_at_column
 from lib.time import wib_now
 from lib.utils import new_id
 from datetime import datetime
@@ -28,6 +29,7 @@ class Device(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=wib_now)
     # No onupdate: heartbeat touches must NOT bump this. Matches backend2.
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=wib_now)
+    deleted_at: Mapped[datetime | None] = deleted_at_column()
     # Deploy signal: rows are born 'disconnect' (server default); the kiosk
     # flips it to 'connect' on its first successful POST /auth/device/token.
     connectivity: Mapped[str | None] = mapped_column(Text, nullable=True, default="disconnect")

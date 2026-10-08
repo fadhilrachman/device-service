@@ -5,6 +5,7 @@ from sqlalchemy import String, Numeric, DateTime, JSON, ForeignKey
 from sqlalchemy.orm import Mapped, mapped_column
 
 from database import Base
+from lib.soft_delete import deleted_at_column
 from lib.time import wib_now
 from lib.utils import new_id
 
@@ -29,3 +30,4 @@ class Payment(Base):
     paid_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=wib_now, index=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=wib_now, onupdate=wib_now)
+    deleted_at: Mapped[datetime | None] = deleted_at_column()

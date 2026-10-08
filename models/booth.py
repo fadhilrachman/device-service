@@ -1,6 +1,7 @@
 from sqlalchemy import String, Integer, Boolean, DateTime, JSON, ForeignKey
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from database import Base
+from lib.soft_delete import deleted_at_column
 from lib.utils import new_id
 from datetime import datetime
 
@@ -13,5 +14,6 @@ class Booth(Base):
     location: Mapped[str | None] = mapped_column(String(200), nullable=True)
     status: Mapped[str] = mapped_column(String(40), default='active', index=True)
     config_override: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    deleted_at: Mapped[datetime | None] = deleted_at_column()
 
     campaign: Mapped["Campaign | None"] = relationship("Campaign")

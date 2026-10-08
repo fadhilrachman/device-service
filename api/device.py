@@ -27,14 +27,14 @@ def _me_response(db: Session, device: Device) -> DeviceResponse:
     if assignment:
         assignment_data = DeviceAssignmentResponse.model_validate(assignment)
         booth = db.get(Booth, assignment.booth_id)
-        if booth:
+        if booth is not None and booth.deleted_at is None:
             assignment_data.booth_name = booth.name
             assignment_data.booth_location = booth.location
             assignment_data.campaign_id = booth.campaign_id
             assignment_data.booth = BoothResponse.model_validate(booth)
             if booth.campaign_id:
                 campaign = db.get(Campaign, booth.campaign_id)
-                if campaign:
+                if campaign is not None and campaign.deleted_at is None:
                     assignment_data.campaign = CampaignResponse.model_validate(campaign)
         response.device_assignment = assignment_data
     return response

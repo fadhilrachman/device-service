@@ -41,11 +41,15 @@ def get_config(request: Request, db: Session = Depends(get_db)):
         if device and device.camera_profile_id
         else None
     )
+    if camera is not None and camera.deleted_at is not None:
+        camera = None
     printer = (
         db.get(PrinterProfile, device.printer_profile_id)
         if device and device.printer_profile_id
         else None
     )
+    if printer is not None and printer.deleted_at is not None:
+        printer = None
 
     campaign = _active_campaign(db, device_id)
     frames = _resolve_frames(db, campaign)
@@ -78,7 +82,9 @@ def get_campaign(request: Request, db: Session = Depends(get_db)):
         )
     response = CampaignResponse.model_validate(campaign).model_dump()
     response["frame_set"] = [
-        frame.id for frame in sorted(campaign.frame_templates, key=lambda frame: (frame.name, frame.id))
+        frame.id
+        for frame in sorted(campaign.frame_templates, key=lambda frame: (frame.name, frame.id))
+        if frame.deleted_at is None
     ]
     return CampaignConfigResponse.model_validate(response)
 
@@ -91,11 +97,15 @@ def get_profiles(request: Request, db: Session = Depends(get_db)):
         if device and device.camera_profile_id
         else None
     )
+    if camera is not None and camera.deleted_at is not None:
+        camera = None
     printer = (
         db.get(PrinterProfile, device.printer_profile_id)
         if device and device.printer_profile_id
         else None
     )
+    if printer is not None and printer.deleted_at is not None:
+        printer = None
     return {
         "camera_profile": CameraProfileResponse.model_validate(camera) if camera else None,
         "printer_profile": PrinterProfileResponse.model_validate(printer) if printer else None,
@@ -107,9 +117,12 @@ def _active_campaign(db: Session, device_id: str) -> Campaign | None:
     if not assignment:
         return None
     booth = db.get(Booth, assignment.booth_id)
-    if not booth or not booth.campaign_id:
+    if not booth or booth.deleted_at is not None or not booth.campaign_id:
         return None
-    return db.get(Campaign, booth.campaign_id)
+    campaign = db.get(Campaign, booth.campaign_id)
+    if campaign is None or campaign.deleted_at is not None:
+        return None
+    return campaign
 
 
 def _device_vouchers(db: Session, device_id: str, campaign: Campaign):
@@ -119,6 +132,8 @@ def _device_vouchers(db: Session, device_id: str, campaign: Campaign):
         .filter(
             VoucherBatch.campaign_id == campaign.id,
             Voucher.device_id == device_id,
+            Voucher.deleted_at.is_(None),
+            VoucherBatch.deleted_at.is_(None),
         )
     )
 
@@ -128,7 +143,7 @@ def _resolve_frames(db: Session, campaign: Campaign | None) -> list[FrameTemplat
         linked = [
             f
             for f in campaign.frame_templates
-            if f.publish_state is PublishState.PUBLIC
+            if f.publish_state is PublishState.PUBLIC and f.deleted_at is None
         ]
         if linked:
             return sorted(linked, key=lambda frame: (frame.name, frame.id))

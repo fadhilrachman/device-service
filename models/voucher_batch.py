@@ -1,7 +1,9 @@
 from sqlalchemy import String, Boolean, DateTime, JSON, ForeignKey
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from database import Base
+from lib.soft_delete import deleted_at_column
 from lib.utils import new_id
+from datetime import datetime
 
 
 class VoucherBatch(Base):
@@ -11,6 +13,7 @@ class VoucherBatch(Base):
     name: Mapped[str] = mapped_column(String(200))
     entitlement_rules: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     offline_eligible: Mapped[bool] = mapped_column(Boolean, default=False)
+    deleted_at: Mapped[datetime | None] = deleted_at_column()
 
     vouchers: Mapped[list["Voucher"]] = relationship("Voucher", back_populates="batch", cascade="all, delete-orphan")
 

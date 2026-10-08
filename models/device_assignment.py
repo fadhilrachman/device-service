@@ -1,6 +1,7 @@
 from sqlalchemy import String, Integer, Boolean, DateTime, JSON, ForeignKey
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from database import Base
+from lib.soft_delete import deleted_at_column
 from lib.utils import new_id
 from datetime import datetime
 
@@ -13,6 +14,7 @@ class DeviceAssignment(Base):
     assigned_from: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     assigned_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     status: Mapped[str] = mapped_column(String(40), default='active')
+    deleted_at: Mapped[datetime | None] = deleted_at_column()
 
     booth: Mapped["Booth"] = relationship("Booth")
     device: Mapped["Device"] = relationship("Device")
