@@ -218,22 +218,13 @@ class SyncDeviceResponse(BaseModel):
 class SyncConfigResponse(BaseModel):
     """Same bundle as GET /config, minus frames and device health fields.
 
-    Frames live only in ``BulkChangesResponse.frame_templates`` so the sync
-    payload carries a single frame field (campaign_frames + new_frames).
+    Frames live only in ``BulkChangesResponse.frame_templates`` as a flat list.
     """
 
     device: Optional[SyncDeviceResponse] = None
     camera_profile: Optional[CameraProfileResponse] = None
     printer_profile: Optional[PrinterProfileResponse] = None
     offline_vouchers: int = 0
-
-
-class SyncFrameTemplatesResponse(BaseModel):
-    """Frame templates this device may serve, split into "everything" and "new"."""
-
-    campaign_id: Optional[str] = Field(default=None, description="Campaign resolved from the device's active assignment, or null when it has none.")
-    campaign_frames: list[FrameTemplateResponse] = Field(default_factory=list, description="Full set resolved for this device: campaign-linked public frames, or every public frame when the campaign links none (same rule as GET /config.frames).")
-    new_frames: list[FrameTemplateResponse] = Field(default_factory=list, description="Subset of campaign_frames that was not delivered in this device's previous sync. Tracked in device_sync_logs.meta, because campaign_frame_templates has no timestamps to diff on.")
 
 
 class BulkChangesResponse(BaseModel):
@@ -245,7 +236,7 @@ class BulkChangesResponse(BaseModel):
 
     vouchers: list[VoucherResponse] = Field(default_factory=list, description="This device's vouchers (active campaign) whose created_at or updated_at is newer than devices.last_synced_at. On the first sync (NULL watermark) every voucher is returned.")
     config: SyncConfigResponse = Field(default_factory=SyncConfigResponse)
-    frame_templates: SyncFrameTemplatesResponse = Field(default_factory=SyncFrameTemplatesResponse)
+    frame_templates: list[FrameTemplateResponse] = Field(default_factory=list, description="Full frame set resolved for this device: campaign-linked public frames, or every public frame when the campaign links none (same rule as GET /config.frames).")
     voucher_since: Optional[datetime] = Field(default=None, description="Watermark used to select vouchers (null on the first sync).")
     synced_at: Optional[datetime] = Field(default=None, description="devices.last_synced_at written at the end of this sync; the next sync diffs against it.")
 
@@ -267,4 +258,4 @@ class BulkSyncResponse(BaseModel):
     summary: dict[str, BulkSummary] = Field(description="ok/failed counts per table.")
     sync_log_id: str = Field(description="device_sync_logs row id for this action (admin audit).")
     device_updated: Optional[bool] = Field(default=None, description="null when no `device` block was sent, else true when the device row actually changed.")
-    changes: Optional[BulkChangesResponse] = Field(default=None, description="Server -> kiosk payload: vouchers changed since last_synced_at, the GET /config bundle (minus device health fields and frames), and frame templates (full set + newly assigned).")
+    changes: Optional[BulkChangesResponse] = Field(default=None, description="Server -> kiosk payload: vouchers changed since last_synced_at, the GET /config bundle (minus device health fields and frames), and frame templates (full set).")

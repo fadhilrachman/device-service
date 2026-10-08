@@ -535,19 +535,17 @@ with TestClient(app, headers=AUTH_HEADERS) as client:
     ok("changes.config mirrors GET /config minus the three health fields and frames")
 
     ft = changes["frame_templates"]
-    assert ft["campaign_id"] == "camp-smoke", ft["campaign_id"]
-    assert [f["id"] for f in ft["campaign_frames"]] == [f["id"] for f in live["frames"]]
-    assert [f["id"] for f in ft["new_frames"]] == [f["id"] for f in live["frames"]]
-    ok("changes.frame_templates: campaign set, everything counts as new on first sync")
+    assert isinstance(ft, list), ft
+    assert [f["id"] for f in ft] == [f["id"] for f in live["frames"]]
+    ok("changes.frame_templates: flat full set, same as GET /config.frames")
 
-    # nothing touched since the watermark -> no vouchers, no new frames
+    # nothing touched since the watermark -> no vouchers, same full frame set
     r = client.post("/sync/bulk", json={"device": {"app_version": "1.4.1"}})
     changes = r.json()["changes"]
     assert changes["voucher_since"] is not None
     assert changes["vouchers"] == [], changes["vouchers"]
-    assert changes["frame_templates"]["new_frames"] == []
-    assert [f["id"] for f in changes["frame_templates"]["campaign_frames"]] == ["frame-public-1"]
-    ok("repeat sync returns no changed vouchers and no new frames")
+    assert [f["id"] for f in changes["frame_templates"]] == ["frame-public-1"]
+    ok("repeat sync returns no changed vouchers and the same full frame set")
 
     # a voucher created after the watermark comes back, and only it
     with remote_session() as db:
@@ -562,7 +560,7 @@ with TestClient(app, headers=AUTH_HEADERS) as client:
     assert [v["code"] for v in changes["vouchers"]] == ["SYNC-NEW-1"], changes["vouchers"]
     ok("only vouchers created after last_synced_at come back")
 
-    # a frame linked to the campaign after the last delivery shows up as new
+    # a frame linked to the campaign afterwards shows up in the full set
     with remote_session() as db:
         db.add(FrameTemplate(
             id="frame-public-3",
@@ -587,9 +585,8 @@ with TestClient(app, headers=AUTH_HEADERS) as client:
         assert len(campaign.frame_templates) >= 1
     changes = client.post("/sync/bulk", json={"device": {"app_version": "1.4.3"}}).json()["changes"]
     ft = changes["frame_templates"]
-    assert [f["id"] for f in ft["new_frames"]] == ["frame-public-3"], [f["id"] for f in ft["new_frames"]]
-    assert {f["id"] for f in ft["campaign_frames"]} == {"frame-public-1", "frame-public-3"}
-    ok("newly assigned frame appears in new_frames, full campaign set is always returned")
+    assert {f["id"] for f in ft} == {"frame-public-1", "frame-public-3"}
+    ok("newly assigned frame appears in the full set")
 
     # 11. Device authorization API (/auth/device/*) proxies to SSO
     r = client.get("/openapi.json")

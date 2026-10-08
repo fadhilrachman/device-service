@@ -30,7 +30,6 @@ from schemas.sync import (
     BulkSyncResponse,
     SyncConfigResponse,
     SyncDeviceResponse,
-    SyncFrameTemplatesResponse,
 )
 
 router = APIRouter(prefix="/sync", tags=["sync"])
@@ -39,10 +38,6 @@ MAX_ERRORS_PER_TABLE = 10
 
 # Pull side of the sync, returned with the push results.
 MAX_PULL_VOUCHERS = 500
-# How far back to look for the watermark of "what this device already got".
-SYNC_LOG_LOOKBACK = 20
-# meta key holding the frame ids delivered in a sync, used to compute "new".
-FRAME_DELIVERY_META_KEY = "frame_templates_delivered"
 
 # Columns the kiosk may self-report through BulkSyncRequest.device. Identity,
 # binding and capabilities columns stay admin/SSO owned, so they are never
@@ -323,28 +318,6 @@ def _apply_device_update(db: Session, device: Device, item) -> bool:
     return changed
 
 
-def _delivered_frame_ids(db: Session, device_id: str) -> set[str]:
-    """Frame ids this device already received, from its newest sync log.
-
-    `campaign_frame_templates` has no timestamps (only the two FK columns), so
-    "newly assigned to my campaign" cannot be derived from the link table. The
-    last delivery watermark is written into `device_sync_logs.meta` instead.
-    """
-    logs = (
-        db.query(DeviceSyncLog)
-        .filter(DeviceSyncLog.device_id == device_id)
-        .order_by(DeviceSyncLog.started_at.desc())
-        .limit(SYNC_LOG_LOOKBACK)
-        .all()
-    )
-    for log in logs:
-        meta = log.meta or {}
-        delivered = meta.get(FRAME_DELIVERY_META_KEY)
-        if isinstance(delivered, list):
-            return {str(frame_id) for frame_id in delivered}
-    return set()
-
-
 def _changed_vouchers(
     db: Session, device: Device, campaign: Campaign | None, since
 ) -> list[Voucher]:
@@ -369,8 +342,6 @@ def _pull_changes(db: Session, device: Device, campaign: Campaign | None) -> Bul
     vouchers = _changed_vouchers(db, device, campaign, since)
 
     frames = _resolve_frames(db, campaign)
-    delivered = _delivered_frame_ids(db, device.id)
-    new_frames = [frame for frame in frames if frame.id not in delivered]
 
     camera = (
         db.get(CameraProfile, device.camera_profile_id)
@@ -400,11 +371,7 @@ def _pull_changes(db: Session, device: Device, campaign: Campaign | None) -> Bul
             printer_profile=PrinterProfileResponse.model_validate(printer) if printer else None,
             offline_vouchers=offline_vouchers,
         ),
-        frame_templates=SyncFrameTemplatesResponse(
-            campaign_id=campaign.id if campaign else None,
-            campaign_frames=[FrameTemplateResponse.model_validate(frame) for frame in frames],
-            new_frames=[FrameTemplateResponse.model_validate(frame) for frame in new_frames],
-        ),
+        frame_templates=[FrameTemplateResponse.model_validate(frame) for frame in frames],
         voucher_since=since,
     )
 
@@ -425,7 +392,7 @@ def _pull_changes(db: Session, device: Device, campaign: Campaign | None) -> Bul
         "makes a device-only push (no records) a valid request. "
         "The response always carries a `changes` block with the server -> kiosk half: vouchers changed "
         "since devices.last_synced_at, the GET /config bundle (without device storage_state/camera_health/"
-        "printer_health), and frame templates (full campaign set plus the newly assigned subset). "
+        "printer_health), and frame templates (full frame set). "
         "This sync then stamps devices.last_synced_at, which the next sync diffs against."
     ),
     responses={
@@ -529,13 +496,11 @@ def bulk_sync(payload: BulkSyncRequest, request: Request, db: Session = Depends(
         # key so it never collides with the caller-provided meta. mode="json"
         # unwraps the ConnectionState enums to their plain values for the JSON column.
         meta["device"] = device_payload.model_dump(exclude_none=True, mode="json")
-    # Delivery watermark for the next sync's "newly assigned frames" diff.
-    meta[FRAME_DELIVERY_META_KEY] = [frame.id for frame in changes.frame_templates.campaign_frames]
+    # Frame list delivered in this sync, for audit.
+    meta["frame_templates"] = [frame.id for frame in changes.frame_templates]
     meta["pull"] = {
         "vouchers": len(changes.vouchers),
-        "frames_total": len(changes.frame_templates.campaign_frames),
-        "frames_new": len(changes.frame_templates.new_frames),
-        "campaign_id": changes.frame_templates.campaign_id,
+        "frames": len(changes.frame_templates),
         "voucher_since": changes.voucher_since.isoformat() if changes.voucher_since else None,
     }
     log.meta = meta
