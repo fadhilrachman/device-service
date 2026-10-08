@@ -22,6 +22,8 @@ PUBLIC_PATHS = {
     "/auth/device/token/",
     "/auth/device/refresh",
     "/auth/device/refresh/",
+    "/auth/device/verify-password",
+    "/auth/device/verify-password/",
 }
 bearer_scheme = HTTPBearer(auto_error=False)
 

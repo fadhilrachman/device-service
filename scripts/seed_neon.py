@@ -30,6 +30,7 @@ if not os.getenv("REMOTE_DATABASE_URL") and _BACKEND_ENV.exists():
 from database import remote_session  # noqa: E402
 from lib.time import wib_now  # noqa: E402
 from lib.utils import new_id  # noqa: E402
+from lib.password import hash_password  # noqa: E402
 from models.booth import Booth  # noqa: E402
 from models.campaign import Campaign  # noqa: E402
 from models.camera_profile import CameraProfile  # noqa: E402
@@ -198,6 +199,7 @@ def seed_all() -> dict:
                 "camera_profile_id": CAMERA_ID,
                 "printer_profile_id": PRINTER_ID,
                 "app_version": os.getenv("APP_VERSION", "0.1.0"),
+                "password_hash": hash_password("123456"),
             },
         )
 

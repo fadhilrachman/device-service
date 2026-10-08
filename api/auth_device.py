@@ -11,6 +11,7 @@ from database import get_db, remote_session
 from lib.device_conflict import device_conflict, device_taken, taken_conflict
 from lib.sso import SSOClient, SSOError, authorize_payload
 from lib.utils import new_device_code
+from lib.password import hash_password, verify_password
 from models.device import Device
 from schemas.auth_device import (
     DeviceAuthorizeRequest,
@@ -21,6 +22,8 @@ from schemas.auth_device import (
     DeviceTokenResponse,
     DeviceVerificationRequest,
     DeviceVerificationResponse,
+    DevicePasswordVerifyRequest,
+    DevicePasswordVerifyResponse,
 )
 
 router = APIRouter(prefix="/auth/device", tags=["auth"])
@@ -341,3 +344,26 @@ def revoke_device(payload: DeviceRevokeRequest, request: Request):
     except SSOError as exc:
         raise HTTPException(status_code=exc.status_code or status.HTTP_502_BAD_GATEWAY, detail=exc.message)
     return _forward(response)
+
+
+@router.post(
+    "/verify-password/",
+    operation_id="auth_device_password_verify_create",
+    summary="Verify device password for kiosk settings access",
+    response_model=DevicePasswordVerifyResponse,
+    responses={
+        401: {"description": "Invalid device code or password"},
+    },
+)
+def verify_device_password(payload: DevicePasswordVerifyRequest, db: Session = Depends(get_db)):
+    """Verify device password for kiosk settings access.
+
+    The kiosk calls this endpoint when an operator tries to access settings.
+    Returns success if password matches, 401 otherwise.
+    """
+    device = db.query(Device).filter(Device.device_code == payload.device_code).first()
+    if not device or not device.password_hash:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid device or password not set")
+    if not verify_password(payload.password, device.password_hash):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid password")
+    return DevicePasswordVerifyResponse(success=True, message="Password verified")

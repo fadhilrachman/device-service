@@ -41,9 +41,10 @@ MAX_PULL_VOUCHERS = 500
 
 # Columns the kiosk may self-report through BulkSyncRequest.device. Identity,
 # binding and capabilities columns stay admin/SSO owned, so they are never
-# written from here. camera_health/printer_health are ConnectionState enums and
-# are unwrapped to their plain string value before hitting the Text columns.
-DEVICE_SYNC_FIELDS = ("app_version", "storage_state", "camera_health", "printer_health")
+# written from here. printer_health is a ConnectionState enum and is unwrapped
+# to its plain string value before hitting the Text column. battery is handled
+# separately: it lands on the linked camera_profiles row, not on devices.
+DEVICE_SYNC_FIELDS = ("app_version", "storage_state", "printer_health")
 
 
 def _fail(tables: dict, table: str, message: str) -> None:
@@ -294,8 +295,11 @@ def _apply_device_update(db: Session, device: Device, item) -> bool:
     """Apply the optional `device` block of a bulk push onto the caller's row.
 
     Health fields keep the semantics of PATCH /devices/heartbeat: only what the
-    kiosk sent is overwritten (camera/printer accept only the ConnectionState
-    values "connect"/"disconnect", enforced by the schema). Liveness stamps
+    kiosk sent is overwritten (printer accepts only the ConnectionState
+    values "connect"/"disconnect", enforced by the schema; a legacy
+    camera_health value is accepted but ignored). Battery is stored on the
+    linked camera_profiles row instead of devices, so the device must have a
+    camera profile or the whole sync is rejected with 404. Liveness stamps
     (last_seen_at, last_heartbeat, connectivity) stay server-owned and are set
     to server time, so a kiosk cannot backdate them. `updated_at` is
     deliberately not touched: it flags config changes for the admin has_update
@@ -313,6 +317,20 @@ def _apply_device_update(db: Session, device: Device, item) -> bool:
         value = getattr(value, "value", value)  # enum -> plain str for the Text column
         if getattr(device, field) != value:
             setattr(device, field, value)
+            changed = True
+    if item.battery is not None:
+        camera = (
+            db.get(CameraProfile, device.camera_profile_id)
+            if device.camera_profile_id
+            else None
+        )
+        if camera is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Camera profile is not linked to this device.",
+            )
+        if camera.battery != item.battery:
+            camera.battery = item.battery
             changed = True
     db.flush()
     return changed
@@ -387,8 +405,8 @@ def _pull_changes(db: Session, device: Device, campaign: Campaign | None) -> Bul
         "savepoints: one bad record fails alone while siblings still apply. Retries are idempotent via "
         "session_local_id/payment_local_id (sessions/payments) and voucher code. Writes one device_sync_logs row (trigger=kiosk). "
         "An optional `device` block reports the kiosk's own state (app_version, storage_state, "
-        "camera_health, printer_health) and is applied to the caller's row; camera_health/printer_health "
-        "accept only connect|disconnect. It also stamps last_seen_at/last_heartbeat like a heartbeat, and "
+        "battery, printer_health) and is applied to the caller's row; battery (0-100) is stored on the "
+        "linked camera_profiles row and printer_health accepts only connect|disconnect. It also stamps last_seen_at/last_heartbeat like a heartbeat, and "
         "makes a device-only push (no records) a valid request. "
         "The response always carries a `changes` block with the server -> kiosk half: vouchers changed "
         "since devices.last_synced_at, the GET /config bundle (without device storage_state/camera_health/"
@@ -410,8 +428,11 @@ def bulk_sync(payload: BulkSyncRequest, request: Request, db: Session = Depends(
     total = len(payload.sessions) + len(payload.payments) + len(payload.voucher_redemptions)
     # A batch may carry only a device self-report (nothing to flush offline).
     device_payload = payload.device
+    # camera_health counts toward a non-empty payload (legacy kiosks must not
+    # be denied) but is ignored when applied; see _apply_device_update.
     has_device_update = device_payload is not None and any(
-        getattr(device_payload, field) is not None for field in DEVICE_SYNC_FIELDS
+        getattr(device_payload, field) is not None
+        for field in (*DEVICE_SYNC_FIELDS, "battery", "camera_health")
     )
     if total == 0 and not has_device_update:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Empty bulk payload.")

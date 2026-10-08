@@ -6,6 +6,7 @@ from lib.device_assignment import get_valid_assignment
 from lib.device_identity import require_request_device_id
 from lib.time import wib_now
 from models.booth import Booth
+from models.camera_profile import CameraProfile
 from models.campaign import Campaign
 from models.device import Device
 from schemas.catalog import BoothResponse, CampaignResponse
@@ -70,8 +71,18 @@ def heartbeat(payload: DeviceHeartbeatRequest, request: Request, db: Session = D
     device.connectivity = "online"
     if payload.storage_state is not None:
         device.storage_state = payload.storage_state
-    if payload.camera_health is not None:
-        device.camera_health = payload.camera_health
+    if payload.battery is not None:
+        camera = (
+            db.get(CameraProfile, device.camera_profile_id)
+            if device.camera_profile_id
+            else None
+        )
+        if camera is None:
+            raise HTTPException(
+                status_code=404, detail='Camera profile is not linked to this device.'
+            )
+        camera.battery = payload.battery
+        db.flush()
     if payload.printer_health is not None:
         device.printer_health = payload.printer_health
 

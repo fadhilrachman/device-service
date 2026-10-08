@@ -36,6 +36,7 @@ class Device(Base):
     storage_state: Mapped[str | None] = mapped_column(Text, nullable=True)
     camera_health: Mapped[str | None] = mapped_column(Text, nullable=True)
     printer_health: Mapped[str | None] = mapped_column(Text, nullable=True)
+    password_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     camera_profile: Mapped["CameraProfile | None"] = relationship("CameraProfile")
     printer_profile: Mapped["PrinterProfile | None"] = relationship("PrinterProfile")

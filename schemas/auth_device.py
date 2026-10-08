@@ -86,3 +86,13 @@ class DeviceRefreshRequest(BaseModel):
 
 class DeviceRevokeRequest(BaseModel):
     device_id: UUID4
+
+
+class DevicePasswordVerifyRequest(BaseModel):
+    device_code: str = Field(max_length=DEVICE_CODE_MAX)
+    password: str = Field(min_length=1, max_length=100)
+
+
+class DevicePasswordVerifyResponse(BaseModel):
+    success: bool
+    message: str

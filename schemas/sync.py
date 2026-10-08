@@ -94,11 +94,10 @@ class BulkVoucherItem(BaseModel):
 
 
 class ConnectionState(str, Enum):
-    """Peripheral link state a kiosk may report for camera/printer.
+    """Peripheral link state a kiosk may report for the printer.
 
     Deliberately only two values: "is it plugged in right now". Anything else
-    (including the free text PATCH /devices/heartbeat still accepts) is a 422
-    on this endpoint so admin dashboards get one predictable vocabulary.
+    is a 422 on this endpoint so admin dashboards get one predictable vocabulary.
     """
 
     CONNECT = "connect"
@@ -122,7 +121,7 @@ class BulkDeviceItem(BaseModel):
             "example": {
                 "app_version": "1.4.0",
                 "storage_state": "free 12.4GB",
-                "camera_health": "connect",
+                "battery": 82,
                 "printer_health": "disconnect",
             }
         },
@@ -130,7 +129,8 @@ class BulkDeviceItem(BaseModel):
 
     app_version: Optional[str] = Field(default=None, max_length=APP_VERSION_MAX, description="Kiosk app version. Must fit devices.app_version (50 chars) or the request is 422.")
     storage_state: Optional[str] = Field(default=None, description="Free text storage status. Same column as PATCH /devices/heartbeat.")
-    camera_health: Optional[ConnectionState] = Field(default=None, description="Camera link state: connect or disconnect.")
+    battery: Optional[int] = Field(default=None, ge=0, le=100, description="Camera battery percent 0-100. Stored on the linked camera_profiles row; rejected when the device has no camera profile.")
+    camera_health: Optional[str] = Field(default=None, description="Deprecated: accepted but ignored. The camera report is battery now.")
     printer_health: Optional[ConnectionState] = Field(default=None, description="Printer link state: connect or disconnect.")
 
 
@@ -171,7 +171,7 @@ class BulkSyncRequest(BaseModel):
                 "device": {
                     "app_version": "1.4.0",
                     "storage_state": "free 12.4GB",
-                    "camera_health": "connect",
+                    "battery": 82,
                     "printer_health": "disconnect",
                 },
                 "meta": {"app_version": "1.4.0"},
@@ -191,7 +191,7 @@ class SyncDeviceResponse(BaseModel):
 
     ``last_seen_at`` / ``last_heartbeat`` are server-side liveness stamps the
     kiosk never needs (``connectivity`` + ``last_synced_at`` carry the state
-    the kiosk actually uses). ``storage_state`` / ``camera_health`` /
+    the kiosk actually uses). ``storage_state`` / ``printer_health`` /
     ``printer_health`` are dropped on purpose: the kiosk *pushes* them in
     BulkDeviceItem, so echoing them back in a pull payload would only invite
     the client to trust stale server state.

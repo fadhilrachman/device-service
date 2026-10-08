@@ -1,12 +1,17 @@
 from typing import Optional
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from schemas.catalog import BoothResponse, CampaignResponse
 
 
 class DeviceHeartbeatRequest(BaseModel):
+    # Unknown keys (notably the retired camera_health report) are ignored so
+    # older kiosks keep working; only battery is honored for the camera.
+    model_config = ConfigDict(extra='ignore')
     storage_state: Optional[str] = None
-    camera_health: Optional[str] = None
+    battery: Optional[int] = Field(
+        default=None, ge=0, le=100, description='Camera battery percent 0-100.'
+    )
     printer_health: Optional[str] = None
 
 

@@ -408,7 +408,8 @@ with TestClient(app, headers=AUTH_HEADERS) as client:
     assert r.status_code == 400 and "Empty bulk payload" in r.json()["detail"], r.text
     ok("POST /sync/bulk empty payload -> 400")
 
-    # device-only push (nothing to flush) is valid and writes the kiosk columns
+    # device-only push (nothing to flush) is valid and writes the kiosk columns.
+    # camera_health is legacy: accepted but ignored, so it stays NULL below.
     device_report = {
         "app_version": "1.4.0",
         "storage_state": "free 12.4GB",
@@ -424,7 +425,7 @@ with TestClient(app, headers=AUTH_HEADERS) as client:
         dev = db.get(Device, device_id)
         assert dev.app_version == "1.4.0", dev.app_version
         assert dev.storage_state == "free 12.4GB", dev.storage_state
-        assert dev.camera_health == "connect", dev.camera_health
+        assert dev.camera_health is None, dev.camera_health  # legacy value ignored
         assert dev.printer_health == "disconnect", dev.printer_health
         assert dev.connectivity == "connect", dev.connectivity
         assert dev.last_heartbeat is not None  # still stamped in DB, hidden from API responses
@@ -435,7 +436,7 @@ with TestClient(app, headers=AUTH_HEADERS) as client:
         assert cfg_device["connectivity"] == "online"
         assert cfg_device["last_synced_at"] is not None
         log = db.get(DeviceSyncLog, body["sync_log_id"])
-        assert log.meta["device"]["camera_health"] == "connect", log.meta  # enum stored as plain value
+        assert log.meta["device"]["camera_health"] == "connect", log.meta  # raw payload echoed in meta
         assert log.meta["app_version"] == "1.4.0", log.meta  # caller meta kept as-is
     ok("POST /sync/bulk device-only push updates the device row and logs meta.device")
 
@@ -450,18 +451,22 @@ with TestClient(app, headers=AUTH_HEADERS) as client:
     with remote_session() as db:
         dev = db.get(Device, device_id)
         assert dev.printer_health == "connect"
-        assert dev.camera_health == "connect", dev.camera_health      # untouched
+        assert dev.camera_health is None, dev.camera_health  # legacy value ignored
         assert dev.app_version == "1.4.0", dev.app_version      # untouched
         assert dev.storage_state == "free 12.4GB", dev.storage_state  # untouched
     ok("partial device block only overwrites the fields it sends")
 
-    # camera/printer health is a closed vocabulary
-    for bad in ["ok", "ready", "CONNECT", "unknown", ""]:
-        r = client.post("/sync/bulk", json={"device": {"camera_health": bad}})
+    # legacy camera_health is accepted but ignored, never denied
+    for legacy in ["connect", "ok", "unknown", ""]:
+        r = client.post("/sync/bulk", json={"device": {"camera_health": legacy}})
+        assert r.status_code == 201, (legacy, r.text)
+    with remote_session() as db:
+        assert db.get(Device, device_id).camera_health is None
+    # printer health stays a closed vocabulary
+    for bad in ["ok", "ready", "CONNECT", "unknown", "", "paper_low"]:
+        r = client.post("/sync/bulk", json={"device": {"printer_health": bad}})
         assert r.status_code == 422, (bad, r.text)
-    r = client.post("/sync/bulk", json={"device": {"printer_health": "paper_low"}})
-    assert r.status_code == 422, r.text
-    ok("POST /sync/bulk camera/printer_health outside connect|disconnect -> 422")
+    ok("legacy camera_health ignored; printer_health outside connect|disconnect -> 422")
 
     # capabilities is not kiosk-writable
     r = client.post("/sync/bulk", json={"device": {"capabilities": {"printer": "ezprint"}}})
