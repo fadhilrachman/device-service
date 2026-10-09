@@ -106,6 +106,9 @@ class PlugCameraProfileResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: str
     name: str
+    image: Optional[str] = None
+    status: bool = True
+    battery: Optional[int] = None
     source: Optional[str] = None
     adapter: Optional[dict] = None
     capture_settings: Optional[dict] = None

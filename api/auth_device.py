@@ -9,6 +9,7 @@ from urllib.parse import quote
 
 from database import get_db, remote_session
 from lib.device_conflict import device_conflict, device_taken, taken_conflict
+from lib.device_identity import require_request_device_id
 from lib.sso import SSOClient, SSOError, authorize_payload
 from lib.utils import new_device_code
 from lib.password import hash_password, verify_password
@@ -352,16 +353,20 @@ def revoke_device(payload: DeviceRevokeRequest, request: Request):
     summary="Verify device password for kiosk settings access",
     response_model=DevicePasswordVerifyResponse,
     responses={
-        401: {"description": "Invalid device code or password"},
+        401: {"description": "Missing/unknown device token, or invalid password"},
+        422: {"description": "Missing or empty password"},
     },
 )
-def verify_device_password(payload: DevicePasswordVerifyRequest, db: Session = Depends(get_db)):
+def verify_device_password(
+    payload: DevicePasswordVerifyRequest, request: Request, db: Session = Depends(get_db)
+):
     """Verify device password for kiosk settings access.
 
-    The kiosk calls this endpoint when an operator tries to access settings.
+    The device is taken from the Bearer token claim, never the body. The
+    kiosk calls this endpoint when an operator tries to access settings.
     Returns success if password matches, 401 otherwise.
     """
-    device = db.query(Device).filter(Device.device_code == payload.device_code).first()
+    device = db.get(Device, require_request_device_id(db, request))
     if not device or not device.password_hash:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid device or password not set")
     if not verify_password(payload.password, device.password_hash):

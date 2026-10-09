@@ -22,8 +22,8 @@ PUBLIC_PATHS = {
     "/auth/device/token/",
     "/auth/device/refresh",
     "/auth/device/refresh/",
-    "/auth/device/verify-password",
-    "/auth/device/verify-password/",
+    # NOTE: verify-password is intentionally NOT public: the calling device
+    # is identified by its Bearer token (lib.device_identity).
 }
 bearer_scheme = HTTPBearer(auto_error=False)
 

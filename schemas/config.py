@@ -22,25 +22,24 @@ class CampaignConfigResponse(CampaignResponse):
 
 
 class CameraProfileResponse(BaseModel):
+    """Nested camera shape (adapter/capture_settings/video_settings as JSON).
+
+    Mirrors ``models.camera_profile.CameraProfile`` and
+    ``schemas.plug.PlugCameraProfileResponse`` so GET /config,
+    GET /config/profiles and POST /sync/bulk return the same fields
+    the kiosk reports via POST /plug/camera_and_printer.
+    """
+
     model_config = ConfigDict(from_attributes=True)
     id: str
     name: str
     image: Optional[str] = None
     status: bool
-    resolution: Optional[str] = None
-    aspect_ratio: Optional[str] = None
-    orientation: Optional[str] = None
-    mirror_preview: Optional[bool] = None
-    exposure: Optional[str] = None
-    iso: Optional[int] = None
-    shutter: Optional[str] = None
-    aperture: Optional[str] = None
-    white_balance: Optional[str] = None
-    focus_mode: Optional[str] = None
-    flash: Optional[bool] = None
-    trigger: Optional[str] = None
-    warm_up: Optional[int] = None
-    capture_timeout: Optional[int] = None
+    battery: Optional[int] = None
+    source: Optional[str] = None
+    adapter: Optional[dict[str, Any]] = None
+    capture_settings: Optional[dict[str, Any]] = None
+    video_settings: Optional[dict[str, Any]] = None
 
 
 class PrinterProfileResponse(BaseModel):

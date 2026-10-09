@@ -2,10 +2,9 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, UUID4
 
-# Column widths on `devices`, which these two fields are written into. Enforced
-# here so an oversized value returns a 422 naming the field instead of a
-# Postgres 22001 truncation error surfaced as a 409.
-DEVICE_CODE_MAX = 100
+# Column width on `devices.name`, which the authorize field is written into.
+# Enforced here so an oversized value returns a 422 naming the field instead
+# of a Postgres 22001 truncation error surfaced as a 409.
 NAME_MAX = 160
 
 
@@ -89,7 +88,11 @@ class DeviceRevokeRequest(BaseModel):
 
 
 class DevicePasswordVerifyRequest(BaseModel):
-    device_code: str = Field(max_length=DEVICE_CODE_MAX)
+    """Kiosk password check. Identity comes from the Bearer token's client_id
+    claim (see lib.device_identity), so the body carries only ``password``."""
+
+    model_config = ConfigDict(extra="forbid")
+
     password: str = Field(min_length=1, max_length=100)
 
 
