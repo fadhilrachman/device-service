@@ -165,7 +165,12 @@ def authorize_device(payload: DeviceAuthorizeRequest, db: Session = Depends(get_
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="Unable to allocate a unique device_code at this time. Retry in a moment.",
             )
-        db_obj = Device(device_code=device_code, name=(payload.device_name or device_code)[:120])
+        # Default PIN 123456 (hashed).
+        db_obj = Device(
+            device_code=device_code,
+            name=(payload.device_name or device_code)[:120],
+            password_hash=hash_password("123456"),
+        )
         db.add(db_obj)
         try:
             db.flush()

@@ -20,6 +20,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 import api.auth_device as auth_device_api  # noqa: E402
 from database import remote_session  # noqa: E402
+from lib.password import verify_password  # noqa: E402
 from lib.sso import SSOError  # noqa: E402
 from main import app  # noqa: E402
 from models.device import Device  # noqa: E402
@@ -105,6 +106,8 @@ with TestClient(app) as client:
         assert row.tenant_id == tenant, row.tenant_id
         assert row.device_code_sso == "sso-code-1", row.device_code_sso
         assert row.user_code_sso == "ABCD-EFGH", row.user_code_sso
+        assert row.password_hash is not None, "default PIN must be hashed on creation"
+        assert verify_password("123456", row.password_hash), "default PIN 123456 must verify"
     ok("success binds tenant + SSO codes and returns client_id with account URIs")
 
     # 2. SSO non-2xx (409): mapped with upstream tag, row rolled back.
