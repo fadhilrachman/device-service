@@ -11,10 +11,10 @@ flowchart LR
   
     subgraph DEVICE [Kiosk / Perangkat]
         direction TB
-        C[POST /api/auth/device/authorize/\nclient_id + organization_id + tenant_id\n+ audience photobooth-api]
+        C[POST /api/v1/devices/authorize/\nclient_id + organization_id\n+ audience photobooth-api\n+ optional tenant_id]
         C --> D[SSO mengembalikan\ndevice_code + user_code\nverification_uri + QR]
         D --> E[Tampilkan QR + user_code\n+ URL fallback manual]
-        E --> F[Polling POST /api/auth/device/token/\nsesuai interval, mis. 5 detik]
+        E --> F[Polling POST /api/v1/devices/token/\nsesuai interval, mis. 5 detik]
         F --> G{Polling berhasil?}
         G -- pending / slow_down --> F
     end
@@ -23,7 +23,7 @@ flowchart LR
         direction TB
         H[Scan QR atau masukkan user_code] --> I[Login SSO]
         I --> J[Verifikasi perangkat, organisasi,\ntenant, dan scope]
-        J --> K[approve /api/auth/device/verification/\npermission device.activate]
+        J -->         K[approve /api/v1/devices/verification/\npermission device.activate]
         K --> F
     end
 
@@ -66,7 +66,7 @@ flowchart LR
     end
 
     OK --> T{Akses token hendak\\nberakhir?}
-    T -- Ya --> U[Refesh POST /api/auth/device/refresh/\nrotasi token atomik]
+    T -- Ya --> U[Refesh POST /api/v1/devices/refresh/\nrotasi token atomik]
     U --> W{Refresh berhasil?}
     W -- Ya --> S
     W -- Tidak --> X([Hapus kredensial\nkembali ke pairing])
@@ -74,7 +74,7 @@ flowchart LR
     T -- Tidak --> Y[Operasi: kiosk siap layani visitor\ndan proses pembayaran]
     Y --> Z{Terdapat logout / revoke?}
     Z -- Logout lokal --> X
-    Z -- Revoke dashboard\n/api/auth/device/revoke --> X
+    Z -- Revoke dashboard\n/api/v1/devices/revoke --> X
     Z -- Tidak --> Y
 ```
 

@@ -1,0 +1,265 @@
+// DB Diagram untuk device-service (ourlilphotobooth)
+// Cara pakai: copy-paste seluruh file ini ke https://dbdiagram.io
+// Sumber: models/*.py (SQLAlchemy mirror dari backend2, PG shared)
+
+Table campaigns {
+  id varchar(36) [pk]
+  name varchar(200) [not null]
+  status varchar(40) [not null, default: 'draft', note: 'index; draft|active|archived']
+  price decimal(12,2)
+  payment_plan_id varchar(36) [note: 'index, FK logis ke Commerce catalog']
+  payment_price_id varchar(36) [note: 'index, FK logis ke Commerce catalog']
+  session_limit integer
+  active_from timestamp
+  active_until timestamp
+  activation_rules json
+  frame_set json
+  print_policy json
+  delivery_policy json
+  deleted_at timestamp [note: 'soft delete']
+}
+
+Table booths {
+  id varchar(36) [pk]
+  campaign_id varchar(36) [note: 'FK -> campaigns.id ON DELETE SET NULL']
+  name varchar(200) [not null]
+  location varchar(200)
+  status varchar(40) [not null, default: 'active', note: 'index']
+  config_override json
+  deleted_at timestamp [note: 'soft delete']
+}
+
+Table devices {
+  id varchar(36) [pk]
+  device_code varchar(100) [not null, unique, note: 'index, kode kiosk stabil']
+  device_code_sso varchar(255) [unique, note: 'index, pairing SSO']
+  user_code_sso varchar(32)
+  tenant_id varchar(36) [unique, note: 'index']
+  name varchar(160)
+  serial_number varchar(100)
+  status varchar(40) [not null, default: 'active', note: 'index']
+  is_verified boolean [not null, default: false]
+  is_sync_status boolean [not null, default: false]
+  capabilities json
+  camera_profile_id varchar(36) [unique, note: 'FK -> camera_profiles.id SET NULL, 1-1']
+  printer_profile_id varchar(36) [unique, note: 'FK -> printer_profiles.id SET NULL, 1-1']
+  app_version varchar(50)
+  last_seen_at timestamp
+  last_heartbeat timestamp
+  last_synced_at timestamp [note: 'index, watermark sync']
+  created_at timestamp [not null]
+  updated_at timestamp [not null]
+  deleted_at timestamp [note: 'soft delete']
+  connectivity text [default: 'disconnect', note: 'connect|disconnect']
+  storage_state text
+  camera_health text
+  printer_health text
+  password_hash varchar(255)
+}
+
+Table device_assignments {
+  id varchar(36) [pk]
+  booth_id varchar(36) [not null, note: 'FK -> booths.id ON DELETE CASCADE']
+  device_id varchar(36) [not null, note: 'FK -> devices.id ON DELETE CASCADE']
+  assigned_from timestamp
+  assigned_until timestamp
+  status varchar(40) [not null, default: 'active']
+  deleted_at timestamp [note: 'soft delete']
+}
+
+Table camera_profiles {
+  id varchar(36) [pk]
+  name varchar(200) [not null]
+  image varchar(500)
+  status boolean [not null, default: true]
+  battery integer
+  source varchar(100)
+  adapter json [note: 'JSONB di PG']
+  capture_settings json [note: 'JSONB di PG']
+  video_settings json [note: 'JSONB di PG']
+  created_at timestamp [not null]
+  updated_at timestamp [not null]
+  deleted_at timestamp
+}
+
+Table printer_profiles {
+  id varchar(36) [pk]
+  name varchar(200) [not null]
+  image varchar(500)
+  status boolean [not null, default: true]
+  connection varchar(50)
+  driver_type varchar(50)
+  transport varchar(50)
+  model varchar(100)
+  device_identifier varchar(100)
+  dpi integer
+  width_dots integer
+  max_height_dots integer
+  media_type varchar(50)
+  label_width integer
+  label_height integer
+  darkness integer
+  speed integer
+  cut boolean
+  feed integer
+  margins json
+  dither varchar(50)
+  qr_size integer
+  template varchar(200)
+  retry_policy varchar(50)
+  calibration_offsets json
+  created_at timestamp [not null]
+  updated_at timestamp [not null]
+  deleted_at timestamp
+}
+
+Table frame_templates {
+  id varchar(36) [pk]
+  name varchar(200) [not null]
+  version varchar(80) [not null]
+  assets text [not null, default: '']
+  aspect varchar(40) [not null]
+  dimensions text [not null, default: '']
+  safe_area text [not null, default: '']
+  transforms json [not null, note: 'JSONB di PG']
+  preview_variant text [not null, default: '']
+  print_variant text [not null, default: '']
+  digital_variant text [not null, default: '']
+  checksum varchar(128) [not null]
+  compatibility text [not null, default: '']
+  publish_state varchar [not null, default: 'draft', note: 'index; enum: draft|public|archive']
+  created_at timestamp [not null]
+  deleted_at timestamp
+}
+
+// Join table M2M campaigns <-> frame_templates
+Table campaign_frame_templates {
+  campaign_id varchar(36) [pk, not null, note: 'FK -> campaigns.id CASCADE']
+  frame_template_id varchar(36) [pk, not null, note: 'FK -> frame_templates.id CASCADE']
+}
+
+Table sessions {
+  id varchar(36) [pk]
+  campaign_id varchar(36) [note: 'index, FK -> campaigns.id SET NULL']
+  booth_id varchar(36) [note: 'index, FK -> booths.id SET NULL']
+  device_id varchar(36) [note: 'index, FK -> devices.id SET NULL']
+  frame_template_id varchar(36) [note: 'index, FK -> frame_templates.id SET NULL']
+  activation_mode varchar [note: 'enum: qr|voucher']
+  state varchar [not null, default: 'started', note: 'index; enum: started|payment_choice|simulation|take_photo|re_take|print|complete|cancelled']
+  config_snapshot_id varchar(36)
+  client_ref varchar(100) [unique, note: 'idempotency kiosk offline']
+  code varchar(20) [unique, note: 'index; human code SES-XXXXXXXX']
+  offline boolean [not null, default: false]
+  created_at timestamp [not null, note: 'index']
+  updated_at timestamp [not null]
+  deleted_at timestamp
+}
+
+Table session_device_logs {
+  id varchar(36) [pk]
+  session_id varchar(36) [not null, note: 'index, FK -> sessions.id CASCADE']
+  device_id varchar(36) [note: 'index, FK -> devices.id SET NULL']
+  camera_profile_id varchar(36) [note: 'FK -> camera_profiles.id SET NULL']
+  printer_profile_id varchar(36) [note: 'FK -> printer_profiles.id SET NULL']
+  frame_template_id varchar(36) [note: 'FK -> frame_templates.id SET NULL']
+  device_code text [note: 'snapshot']
+  camera_profile_name text [note: 'snapshot']
+  printer_profile_name text [note: 'snapshot']
+  frame_template_name text [note: 'snapshot']
+  reason varchar(40) [not null, default: 'created', note: 'created|device_swap|...']
+  created_at timestamp [not null]
+  deleted_at timestamp
+}
+
+Table voucher_batches {
+  id varchar(36) [pk]
+  campaign_id varchar(36) [note: 'FK -> campaigns.id CASCADE']
+  name varchar(200) [not null]
+  entitlement_rules json
+  offline_eligible boolean [not null, default: false]
+  deleted_at timestamp
+}
+
+Table vouchers {
+  id varchar(36) [pk]
+  batch_id varchar(36) [not null, note: 'index, FK -> voucher_batches.id CASCADE']
+  code varchar(20) [not null, unique, note: 'index, kode redeem']
+  status varchar(40) [not null, default: 'available', note: 'index; available|issued|used|expired']
+  session_id varchar(36) [unique, note: 'FK -> sessions.id SET NULL, 1-1 (satu voucher = satu sesi)']
+  device_id varchar(36) [note: 'FK -> devices.id SET NULL']
+  expires_at timestamp
+  issued_at timestamp
+  used_at timestamp
+  created_at timestamp [not null]
+  updated_at timestamp [not null, note: 'watermark sync kiosk']
+  deleted_at timestamp
+}
+
+Table payments {
+  id varchar(36) [pk]
+  booth_id varchar(36) [note: 'index, FK -> booths.id SET NULL']
+  campaign_id varchar(36) [note: 'FK -> campaigns.id SET NULL']
+  device_id varchar(36) [note: 'index, FK -> devices.id SET NULL']
+  voucher_id varchar(36) [note: 'FK -> vouchers.id SET NULL']
+  session_id varchar(36) [note: 'FK -> sessions.id SET NULL']
+  amount decimal(12,2) [not null]
+  currency varchar(8) [not null, default: 'IDR']
+  method varchar(40)
+  status varchar(40) [not null, default: 'pending', note: 'index; pending|paid|failed|expired']
+  provider varchar(40) [not null, default: 'stub']
+  provider_ref varchar(100) [unique, note: 'index, ref Xendit/Commerce']
+  gateway_payload json
+  client_ref varchar(100) [unique, note: 'idempotency']
+  paid_at timestamp
+  created_at timestamp [not null, note: 'index']
+  updated_at timestamp [not null]
+  deleted_at timestamp
+}
+
+Table device_sync_logs {
+  id varchar(36) [pk]
+  device_id varchar(36) [not null, note: 'index, FK -> devices.id CASCADE']
+  trigger varchar(20) [note: 'manual|auto|heartbeat']
+  status varchar(20) [not null, default: 'started', note: 'index; started|success|failed']
+  tables json [note: 'per-table pulled/pushed/failed, cth {voucher:{pulled,pushed,failed}}']
+  error text [note: 'one-line summary']
+  started_at timestamp [not null, note: 'index']
+  finished_at timestamp
+  meta json
+  deleted_at timestamp
+}
+
+// ---------- RELATIONS ----------
+Ref "booths.campaign" : booths.campaign_id > campaigns.id [delete: set null]
+Ref "assignments.booth" : device_assignments.booth_id > booths.id [delete: cascade]
+Ref "assignments.device" : device_assignments.device_id > devices.id [delete: cascade]
+
+Ref "devices.camera" : devices.camera_profile_id - camera_profiles.id [delete: set null]
+Ref "devices.printer" : devices.printer_profile_id - printer_profiles.id [delete: set null]
+
+Ref "m2m.campaign_frames.campaign" : campaign_frame_templates.campaign_id > campaigns.id [delete: cascade]
+Ref "m2m.campaign_frames.frame" : campaign_frame_templates.frame_template_id > frame_templates.id [delete: cascade]
+
+Ref "sessions.campaign" : sessions.campaign_id > campaigns.id [delete: set null]
+Ref "sessions.booth" : sessions.booth_id > booths.id [delete: set null]
+Ref "sessions.device" : sessions.device_id > devices.id [delete: set null]
+Ref "sessions.frame" : sessions.frame_template_id > frame_templates.id [delete: set null]
+
+Ref "session_logs.session" : session_device_logs.session_id > sessions.id [delete: cascade]
+Ref "session_logs.device" : session_device_logs.device_id > devices.id [delete: set null]
+Ref "session_logs.camera" : session_device_logs.camera_profile_id > camera_profiles.id [delete: set null]
+Ref "session_logs.printer" : session_device_logs.printer_profile_id > printer_profiles.id [delete: set null]
+Ref "session_logs.frame" : session_device_logs.frame_template_id > frame_templates.id [delete: set null]
+
+Ref "batches.campaign" : voucher_batches.campaign_id > campaigns.id [delete: cascade]
+Ref "vouchers.batch" : vouchers.batch_id > voucher_batches.id [delete: cascade]
+Ref "vouchers.session" : vouchers.session_id - sessions.id [delete: set null]
+Ref "vouchers.device" : vouchers.device_id > devices.id [delete: set null]
+
+Ref "payments.booth" : payments.booth_id > booths.id [delete: set null]
+Ref "payments.campaign" : payments.campaign_id > campaigns.id [delete: set null]
+Ref "payments.device" : payments.device_id > devices.id [delete: set null]
+Ref "payments.voucher" : payments.voucher_id > vouchers.id [delete: set null]
+Ref "payments.session" : payments.session_id > sessions.id [delete: set null]
+
+Ref "sync_logs.device" : device_sync_logs.device_id > devices.id [delete: cascade]

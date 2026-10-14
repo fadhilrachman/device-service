@@ -79,7 +79,12 @@ with TestClient(app) as client:
         def authorize(self, payload):
             assert payload["tenant_id"] == tenant, payload
             assert payload["audience"] == "photobooth-api", payload
-            assert payload["scopes"] == ["commerce.orders.write", "commerce.payments.process"], payload
+            assert payload["scopes"] == [
+                "photobooth.session",
+                "photobooth.session.write",
+                # "commerce.orders.write",
+                # "commerce.payments.process",
+            ], payload
             assert payload["client_id"].startswith("BE-"), payload
             return _FakeResponse(200, _grant())
 

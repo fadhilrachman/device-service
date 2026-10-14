@@ -47,7 +47,7 @@ Use a new `client_id` when a device is permanently replaced. Do not share one cl
 When the device is not paired, call Arna SSO from the device application or its trusted backend:
 
 ```http
-POST https://sso.arnatech.id/api/auth/device/authorize/
+POST https://sso.arnatech.id/api/v1/devices/authorize/
 Content-Type: application/json
 ```
 
@@ -56,11 +56,12 @@ Content-Type: application/json
   "client_id": "photobooth-ols-cfd-001",
   "device_name": "OLS CFD Photobooth 001",
   "organization_id": "ORG_UUID",
-  "tenant_id": "TENANT_UUID",
   "audience": "photobooth-api",
   "scopes": ["photobooth.session"]
 }
 ```
+
+`tenant_id` (`TENANT_UUID`) opsional — sertakan hanya jika device terikat ke tenant ArnaSite.
 
 SSO returns a short-lived, one-time pairing result similar to:
 
@@ -102,7 +103,7 @@ The operator opens the QR URL, signs in to SSO if needed, verifies the displayed
 The approval request is:
 
 ```http
-POST https://sso.arnatech.id/api/auth/device/verification/
+POST https://sso.arnatech.id/api/v1/devices/verification/
 Authorization: Bearer OWNER_ACCESS_TOKEN
 Content-Type: application/json
 ```
@@ -122,7 +123,7 @@ SSO is responsible for confirming the operator belongs to the organization and h
 After the device authorization request, poll at the returned interval:
 
 ```http
-POST https://sso.arnatech.id/api/auth/device/token/
+POST https://sso.arnatech.id/api/v1/devices/token/
 Content-Type: application/json
 ```
 
@@ -153,7 +154,7 @@ Do not store long-lived credentials in browser localStorage, a public QR payload
 Refresh before the access token expires:
 
 ```http
-POST https://sso.arnatech.id/api/auth/device/refresh/
+POST https://sso.arnatech.id/api/v1/devices/refresh/
 Content-Type: application/json
 ```
 
@@ -213,7 +214,7 @@ Never trust a payment result sent by a visitor browser as proof of payment.
 Device registration, inventory, reassignment, and revocation are managed in the Account dashboard. Dashboard revocation calls:
 
 ```http
-POST https://sso.arnatech.id/api/auth/device/revoke/
+POST https://sso.arnatech.id/api/v1/devices/revoke/
 ```
 
 After revocation, the device must fail on its next refresh and return to pairing. Keep device access tokens short-lived so revocation takes effect promptly.

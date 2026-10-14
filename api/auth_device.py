@@ -129,13 +129,15 @@ def authorize_device(payload: DeviceAuthorizeRequest, db: Session = Depends(get_
     """Create a device row and its SSO grant, all-or-nothing.
 
     Same concept as backend2 POST /devices, with the kiosk-minimal request
-    body kept as-is (``device_name``, ``tenant_id``,
-    ``public_key_thumbprint`` only):
+    body kept as-is (``device_name``, optional ``tenant_id``,
+    ``public_key_thumbprint`` only). SSO v1 ``/v1/devices/authorize/``
+    does not require ``tenant_id``; it is omitted from the upstream body
+    and left NULL locally when absent.
 
-    1. Local-first: reject an already-taken ``tenant_id`` and allocate a
-       unique ``device_code`` (server-generated, up to 6 tries) before
-       touching SSO, so the caller gets the exact field, not a generic
-       unique-violation guess.
+    1. Local-first: reject an already-taken ``tenant_id`` (when given) and
+       allocate a unique ``device_code`` (server-generated, up to 6 tries)
+       before touching SSO, so the caller gets the exact field, not a
+       generic unique-violation guess.
     2. ``flush`` the new row (no commit yet), then call SSO authorize. The
        DB transaction is held across the SSO call; any SSO failure rolls
        the row back, so a failed authorize never leaves an orphan row
@@ -147,10 +149,10 @@ def authorize_device(payload: DeviceAuthorizeRequest, db: Session = Depends(get_
     the injected ``client_id``, with ``verification_uri`` rewritten to the
     operator account page.
     """
-    tenant_id = str(payload.tenant_id)
+    tenant_id = str(payload.tenant_id) if payload.tenant_id is not None else None
     # 1. Local-first check-before-write (mirror backend2).
     try:
-        if device_taken(db, Device.tenant_id, tenant_id):
+        if tenant_id is not None and device_taken(db, Device.tenant_id, tenant_id):
             raise taken_conflict("ix_devices_tenant_id")
         device_code: str | None = None
         for _ in range(6):
@@ -163,7 +165,7 @@ def authorize_device(payload: DeviceAuthorizeRequest, db: Session = Depends(get_
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="Unable to allocate a unique device_code at this time. Retry in a moment.",
             )
-        db_obj = Device(device_code=device_code, name=(payload.device_name or device_code)[:160])
+        db_obj = Device(device_code=device_code, name=(payload.device_name or device_code)[:120])
         db.add(db_obj)
         try:
             db.flush()
@@ -212,7 +214,7 @@ def authorize_device(payload: DeviceAuthorizeRequest, db: Session = Depends(get_
         )
     # 3. Re-check tenant race, bind SSO codes, commit.
     try:
-        if device_taken(db, Device.tenant_id, tenant_id, exclude_device_id=db_obj.id):
+        if tenant_id is not None and device_taken(db, Device.tenant_id, tenant_id, exclude_device_id=db_obj.id):
             db.rollback()
             raise taken_conflict("ix_devices_tenant_id")
         # device_code_sso is only written after the flush above, so its unique

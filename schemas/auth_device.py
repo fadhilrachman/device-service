@@ -2,10 +2,10 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, UUID4
 
-# Column width on `devices.name`, which the authorize field is written into.
+# SSO v1 `/v1/devices/authorize/` caps `device_name`/`client_id` at 120 chars.
 # Enforced here so an oversized value returns a 422 naming the field instead
-# of a Postgres 22001 truncation error surfaced as a 409.
-NAME_MAX = 160
+# of a Postgres 22001 truncation error surfaced as a 409, or a 400 from SSO.
+NAME_MAX = 120
 
 
 class DeviceAuthorizeRequest(BaseModel):
@@ -27,7 +27,10 @@ class DeviceAuthorizeRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     device_name: str = Field(max_length=NAME_MAX)
-    tenant_id: UUID4
+    tenant_id: Optional[UUID4] = Field(
+        default=None,
+        description="Optional ArnaSite tenant UUID. Omitted from the SSO v1 authorize body when absent.",
+    )
     public_key_thumbprint: Optional[str] = Field(
         default=None,
         description="Optional RFC 7638 JWK thumbprint for proof-of-possession binding.",
