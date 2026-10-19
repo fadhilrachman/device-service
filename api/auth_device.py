@@ -10,7 +10,9 @@ from urllib.parse import quote
 from database import get_db, remote_session
 from lib.device_conflict import device_conflict, device_taken, taken_conflict
 from lib.device_identity import require_request_device_id
+from lib.protect_token import decode_base64url_json
 from lib.sso import SSOClient, SSOError, authorize_payload
+from lib.time import wib_now
 from lib.utils import new_device_code
 from lib.password import hash_password, verify_password
 from models.device import Device
@@ -18,6 +20,8 @@ from schemas.auth_device import (
     DeviceAuthorizeRequest,
     DeviceAuthorizeResponse,
     DeviceRefreshRequest,
+    DeviceResourceTokenRequest,
+    DeviceResourceTokenResponse,
     DeviceRevokeRequest,
     DeviceTokenRequest,
     DeviceTokenResponse,
@@ -28,6 +32,10 @@ from schemas.auth_device import (
 )
 
 router = APIRouter(prefix="/auth/device", tags=["auth"])
+
+# Gateway di bawah /auth (bukan /auth/device) sesuai permintaan:
+# POST /auth/resource-token -> SSO POST /v1/devices/resource-token/.
+resource_router = APIRouter(prefix="/auth", tags=["auth"])
 
 logger = logging.getLogger(__name__)
 
@@ -277,7 +285,8 @@ def _mark_connected(device_code_sso: str) -> None:
     """Mark the device connected + verified on first successful token issuance.
 
     A 2xx from SSO means the grant was approved, so the pairing is complete:
-    flip connectivity to 'connect' and is_verified to True.
+    flip connectivity to 'connect', is_verified to True, and stamp
+    last_synced_at as proof the kiosk reached the token endpoint.
 
     Best-effort by design: token issuance must never break because of these
     flags. Failures are logged; the kiosk keeps polling and a later success
@@ -292,9 +301,36 @@ def _mark_connected(device_code_sso: str) -> None:
                 device.connectivity = "connect"
             if not device.is_verified:
                 device.is_verified = True
+            device.last_synced_at = wib_now()
             db.commit()
     except Exception as exc:
         logger.warning("failed to mark device connected (sso_code=%s): %s", device_code_sso, exc)
+
+
+def _reconnect_after_refresh(access_token: str) -> None:
+    """Stamp last_synced_at + connectivity='connect' after a successful refresh.
+
+    The refresh request body carries only an opaque refresh_token, so the
+    device is resolved from the new access token's ``client_id`` claim
+    (== devices.device_code, the same claim lib.device_identity relies on).
+
+    Best-effort by design: bookkeeping must never break the refresh response.
+    """
+    try:
+        parts = access_token.split(".")
+        payload = decode_base64url_json(parts[1]) if len(parts) == 3 else None
+        client_id = payload.get("client_id") if isinstance(payload, dict) else None
+        if not isinstance(client_id, str) or not client_id.strip():
+            return
+        with remote_session() as db:
+            device = db.query(Device).filter(Device.device_code == client_id.strip()).first()
+            if device is None:
+                return
+            device.last_synced_at = wib_now()
+            device.connectivity = "connect"
+            db.commit()
+    except Exception as exc:
+        logger.warning("failed to stamp last sync after refresh: %s", exc)
 
 
 @router.post(
@@ -330,6 +366,13 @@ def refresh_device_token(payload: DeviceRefreshRequest):
         response = SSOClient().refresh(payload.model_dump(mode="json", exclude_none=True))
     except SSOError as exc:
         raise HTTPException(status_code=exc.status_code or status.HTTP_502_BAD_GATEWAY, detail=exc.message)
+    if response.status_code == status.HTTP_200_OK:
+        try:
+            body = response.json()
+        except Exception:
+            body = None
+        if isinstance(body, dict) and body.get("access_token"):
+            _reconnect_after_refresh(body["access_token"])
     return _forward(response)
 
 
@@ -346,6 +389,35 @@ def refresh_device_token(payload: DeviceRefreshRequest):
 def revoke_device(payload: DeviceRevokeRequest, request: Request):
     try:
         response = SSOClient().revoke(
+            payload.model_dump(mode="json", exclude_none=True),
+            _get_access_token(request),
+        )
+    except SSOError as exc:
+        raise HTTPException(status_code=exc.status_code or status.HTTP_502_BAD_GATEWAY, detail=exc.message)
+    return _forward(response)
+
+
+@resource_router.post(
+    "/resource-token/",
+    operation_id="auth_resource_token_create",
+    summary="Resource token gateway - exchange device token for a resource token",
+    response_model=DeviceResourceTokenResponse,
+    responses={
+        400: {"description": "SSO rejected the resource-token request"},
+        401: {"description": "Missing device Bearer token"},
+        403: {"description": "Caller cannot mint a token for this resource"},
+        404: {"description": "Resource not found"},
+    },
+)
+def create_resource_token(payload: DeviceResourceTokenRequest, request: Request):
+    """Gateway ke SSO ``POST /v1/devices/resource-token/``.
+
+    Hanya untuk device yang sudah pairing: Bearer device token diteruskan
+    ke SSO, body diteruskan apa adanya, dan response SSO diteruskan apa
+    adanya (status + body) via ``_forward``.
+    """
+    try:
+        response = SSOClient().resource_token(
             payload.model_dump(mode="json", exclude_none=True),
             _get_access_token(request),
         )

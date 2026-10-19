@@ -90,6 +90,33 @@ class DeviceRevokeRequest(BaseModel):
     device_id: UUID4
 
 
+class DeviceResourceTokenRequest(BaseModel):
+    """Resource-token gateway input (passthrough to SSO).
+
+    Kontrak SSO belum dikunci, jadi schema sengaja fleksibel: field umum
+    (`audience`, `scopes`, `resource`) opsional dan field tambahan apa pun
+    diizinkan lalu diteruskan apa adanya ke
+    ``POST /v1/devices/resource-token/`` via ``model_dump(exclude_none=True)``.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    audience: Optional[str] = Field(default=None)
+    scopes: Optional[list[str]] = Field(default=None)
+    resource: Optional[str] = Field(default=None)
+
+
+class DeviceResourceTokenResponse(BaseModel):
+    """Resource-token gateway output (passthrough dari SSO)."""
+
+    model_config = ConfigDict(extra="allow")
+
+    access_token: Optional[str] = Field(default=None)
+    token_type: Optional[str] = Field(default=None)
+    expires_in: Optional[int] = Field(default=None)
+    scope: Optional[str] = Field(default=None)
+
+
 class DevicePasswordVerifyRequest(BaseModel):
     """Kiosk password check. Identity comes from the Bearer token's client_id
     claim (see lib.device_identity), so the body carries only ``password``."""

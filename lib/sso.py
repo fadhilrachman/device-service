@@ -76,6 +76,14 @@ class SSOClient:
             access_token=access_token,
         )
 
+    def resource_token(self, payload: dict, access_token: str) -> httpx.Response:
+        return self.request(
+            "POST",
+            f"{SSO_DEVICE_PREFIX}/resource-token/",
+            json=payload,
+            access_token=access_token,
+        )
+
 
 def authorize_payload(
     *,

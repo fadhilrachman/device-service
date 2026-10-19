@@ -59,7 +59,7 @@ yang sama dengan `backend2/models/`):
 | `JWT_SECRET` | *harus diisi* | Secret HS256 yang sama dengan `backend2/.env` untuk memverifikasi token Bearer |
 | `PAYMENT_PROVIDER` | `stub` | Provider payment |
 | `STORAGE_BASE_URL` | `https://storage.arnatech.id` | Base URL storage service (proxy upload API) |
-| `SSO_BASE_URL` | `https://sso.arnatech.id/api` | Base URL SSO — digunakan proxy `/auth/device/*` |
+| `SSO_BASE_URL` | `https://sso.arnatech.id/api` | Base URL SSO — digunakan proxy `/auth/device/*` + `/auth/resource-token` |
 | `APP_VERSION` | `0.1.0` | Versi app device |
 
 ## Auth
@@ -107,6 +107,7 @@ itu ditolak 401 di endpoint device. Token operator (untuk `/verification/` dan
 | `POST` | `/auth/device/token/` | Poll token saat device disetujui (proxi ke SSO) |
 | `POST` | `/auth/device/refresh/` | Rotasi refresh token (proxi ke SSO) |
 | `POST` | `/auth/device/revoke/` | Revoke device oleh operator (Bearer, proxi ke SSO) |
+| `POST` | `/auth/resource-token/` | Gateway resource token (Bearer device, proxi ke SSO `/v1/devices/resource-token/`) |
 
 ## Catatan produksi
 
