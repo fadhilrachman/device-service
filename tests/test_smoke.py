@@ -1,4 +1,4 @@
-"""Smoke test for the device service (direct remote DB, no sync layer).
+﻿"""Smoke test for the device service (direct remote DB, no sync layer).
 
 REMOTE_DATABASE_URL points at a temp SQLite file so the suite runs without
 network. All reads/writes go straight to that database.
@@ -169,10 +169,6 @@ with TestClient(app, headers=AUTH_HEADERS) as client:
     assert r.json() == []
     ok("GET /templates (empty)")
 
-    r = client.get("/config/campaign")
-    assert r.status_code == 200 and r.json()["frame_set"] == [], r.text
-    ok("GET /config/campaign has an empty frame_set before linking frames")
-
     with remote_session() as db:
         db.add(FrameTemplate(
             id="frame-public-1",
@@ -245,11 +241,6 @@ with TestClient(app, headers=AUTH_HEADERS) as client:
     assert templates.json()[0]["transforms"] == {"slots": [{"x": 10, "y": 20}]}
     assert templates.json()[0]["publish_state"] == "public"
     ok("GET /config.frames matches campaign templates exactly")
-
-    r = client.get("/config/campaign")
-    assert r.status_code == 200, r.text
-    assert r.json()["frame_set"] == ["frame-draft-1", "frame-public-1"]
-    ok("GET /config/campaign frame_set lists linked frames in a stable order")
 
     # 5. Start a session (direct write, offline flag comes from the client)
     r = client.post("/sessions", json={})
@@ -419,7 +410,7 @@ with TestClient(app, headers=AUTH_HEADERS) as client:
     r = client.post("/sync/bulk", json={"device": device_report, "meta": {"app_version": "1.4.0"}})
     assert r.status_code == 201, r.text
     body = r.json()
-    assert body["device_updated"] is True, body
+    assert set(body) == {"results", "summary", "sync_log_id"}, body
     assert all(s["ok"] == 0 and s["failed"] == 0 for s in body["summary"].values()), body
     with remote_session() as db:
         dev = db.get(Device, device_id)
@@ -430,24 +421,20 @@ with TestClient(app, headers=AUTH_HEADERS) as client:
         assert dev.connectivity == "connect", dev.connectivity
         assert dev.last_heartbeat is not None  # still stamped in DB, hidden from API responses
         assert dev.last_synced_at is not None
-        cfg_device = body["changes"]["config"]["device"]
-        assert "last_heartbeat" not in cfg_device, cfg_device
-        assert "last_seen_at" not in cfg_device, cfg_device
-        assert cfg_device["connectivity"] == "online"
-        assert cfg_device["last_synced_at"] is not None
         log = db.get(DeviceSyncLog, body["sync_log_id"])
         assert log.meta["device"]["camera_health"] == "connect", log.meta  # raw payload echoed in meta
         assert log.meta["app_version"] == "1.4.0", log.meta  # caller meta kept as-is
+        assert log.type == "pull" and log.trigger == "kiosk", (log.type, log.trigger)
     ok("POST /sync/bulk device-only push updates the device row and logs meta.device")
 
-    # identical payload -> row unchanged, reported as device_updated False
+    # identical repeat keeps working (the device row simply stays in place)
     r = client.post("/sync/bulk", json={"device": device_report})
-    assert r.status_code == 201 and r.json()["device_updated"] is False, r.text
-    ok("repeat device payload -> device_updated False")
+    assert r.status_code == 201 and set(r.json()) == {"results", "summary", "sync_log_id"}, r.text
+    ok("repeat device payload -> ok")
 
     # heartbeat semantics: only the sent fields are overwritten
     r = client.post("/sync/bulk", json={"device": {"printer_health": "connect"}})
-    assert r.status_code == 201 and r.json()["device_updated"] is True, r.text
+    assert r.status_code == 201, r.text
     with remote_session() as db:
         dev = db.get(Device, device_id)
         assert dev.printer_health == "connect"
@@ -487,13 +474,12 @@ with TestClient(app, headers=AUTH_HEADERS) as client:
     assert r.status_code == 422, r.text
     ok("POST /sync/bulk device.app_version > 50 chars -> 422")
 
-    # records without a device block keep working, device_updated stays null
+    # records without a device block keep working
     r = client.post(
         "/sync/bulk",
         json={"sessions": [{"session_local_id": "ses_smoke_bulk_1", "state": "complete", "offline": True}]},
     )
     assert r.status_code == 201, r.text
-    assert r.json()["device_updated"] is None, r.text
     assert r.json()["summary"]["session"]["ok"] == 1, r.text
     with remote_session() as db:
         synced = (
@@ -501,97 +487,67 @@ with TestClient(app, headers=AUTH_HEADERS) as client:
         )
         assert synced is not None and synced.code is not None, r.text
         assert synced.code.startswith("SES-"), synced.code
-    ok("POST /sync/bulk records only -> device_updated null")
+        assert db.get(DeviceSyncLog, r.json()["sync_log_id"]).type == "pull", r.text
+    ok("POST /sync/bulk records only -> session synced with type=pull log")
 
-    # 10. Pull side of POST /sync/bulk: vouchers since the watermark, config, frames
-    with remote_session() as db:
-        db.get(Device, device_id).last_synced_at = None  # a device that never synced
-        for log in db.query(DeviceSyncLog).filter(DeviceSyncLog.device_id == device_id).all():
-            log.meta = None  # ...and one that was never handed any frames
-        db.commit()
-
-    r = client.post("/sync/bulk", json={"device": {"app_version": "1.4.0"}})
+    # 10. Response shape: ack only. The server -> kiosk half lives in the GET
+    # endpoints (/config, /vouchers, /frames); the bulk response acknowledges
+    # the pushed records and stamps the kiosk watermark, nothing more.
+    r = client.post(
+        "/sync/bulk",
+        json={"sessions": [{"session_local_id": "ses_smoke_bulk_2", "state": "complete", "offline": True}]},
+    )
     assert r.status_code == 201, r.text
-    changes = r.json()["changes"]
-    assert changes["voucher_since"] is None, changes["voucher_since"]
-    assert sorted(v["code"] for v in changes["vouchers"]) == [
-        "MINE-0001",
-        "MINE-LEGACY",
-        "MINE-USED",
-    ], changes["vouchers"]
-    assert all(v["updated_at"] for v in changes["vouchers"])
+    body = r.json()
+    assert set(body) == {"results", "summary", "sync_log_id"}, body
+    assert body["summary"]["session"]["ok"] == 1, body
     with remote_session() as db:
         assert db.get(Device, device_id).last_synced_at is not None
-    ok("first sync returns every device voucher and stamps devices.last_synced_at")
+        log = db.get(DeviceSyncLog, body["sync_log_id"])
+        assert log.status == "success", log.status
+        assert log.type == "pull" and log.trigger == "kiosk", (log.type, log.trigger)
+    ok("POST /sync/bulk ack-only response stamps devices.last_synced_at (type=pull)")
 
-    cfg = changes["config"]
-    assert set(cfg) == {
-        "device",
-        "camera_profile",
-        "printer_profile",
-        "offline_vouchers",
-    }, set(cfg)
-    assert "frames" not in cfg, cfg
-    assert not {"storage_state", "camera_health", "printer_health"} & set(cfg["device"]), sorted(cfg["device"])
-    live = client.get("/config").json()
-    assert {"storage_state", "camera_health", "printer_health"} <= set(live["device"])
-    for key in ("camera_profile", "printer_profile", "offline_vouchers"):
-        assert cfg[key] == live[key], key
-    ok("changes.config mirrors GET /config minus the three health fields and frames")
-
-    ft = changes["frame_templates"]
-    assert isinstance(ft, list), ft
-    assert [f["id"] for f in ft] == [f["id"] for f in live["frames"]]
-    ok("changes.frame_templates: flat full set, same as GET /config.frames")
-
-    # nothing touched since the watermark -> no vouchers, same full frame set
-    r = client.post("/sync/bulk", json={"device": {"app_version": "1.4.1"}})
-    changes = r.json()["changes"]
-    assert changes["voucher_since"] is not None
-    assert changes["vouchers"] == [], changes["vouchers"]
-    assert [f["id"] for f in changes["frame_templates"]] == ["frame-public-1"]
-    ok("repeat sync returns no changed vouchers and the same full frame set")
-
-    # a voucher created after the watermark comes back, and only it
+    # the middleware logs one push row per successful device GET...
     with remote_session() as db:
-        batch = (
-            db.query(VoucherBatch)
-            .filter(VoucherBatch.campaign_id == "camp-smoke", VoucherBatch.name == "Smoke Batch")
+        push_before = (
+            db.query(DeviceSyncLog)
+            .filter(DeviceSyncLog.device_id == device_id, DeviceSyncLog.type == "push")
+            .count()
+        )
+    r = client.get("/vouchers?limit=1")
+    assert r.status_code == 200, r.text
+    with remote_session() as db:
+        push = (
+            db.query(DeviceSyncLog)
+            .filter(DeviceSyncLog.device_id == device_id, DeviceSyncLog.type == "push")
+            .order_by(DeviceSyncLog.started_at.desc())
             .first()
         )
-        db.add(Voucher(batch_id=batch.id, code="SYNC-NEW-1", device_id=device_id))
-        db.commit()
-    changes = client.post("/sync/bulk", json={"device": {"app_version": "1.4.2"}}).json()["changes"]
-    assert [v["code"] for v in changes["vouchers"]] == ["SYNC-NEW-1"], changes["vouchers"]
-    ok("only vouchers created after last_synced_at come back")
+        assert db.query(DeviceSyncLog).filter(
+            DeviceSyncLog.device_id == device_id, DeviceSyncLog.type == "push"
+        ).count() == push_before + 1
+        assert push.status == "success" and push.error is None, (push.status, push.error)
+        assert push.trigger == "api" and push.finished_at is not None, push.trigger
+    ok("successful GET logs a push row (server -> kiosk)")
 
-    # a frame linked to the campaign afterwards shows up in the full set
+    # ...but status_trigger polling never logs.
     with remote_session() as db:
-        db.add(FrameTemplate(
-            id="frame-public-3",
-            name="Newly Linked Frame",
-            version="1",
-            assets="",
-            aspect="4:5",
-            dimensions="",
-            safe_area="",
-            transforms={},
-            preview_variant="1 foto",
-            print_variant="",
-            digital_variant="",
-            checksum="newly-linked-checksum",
-            compatibility="",
-            publish_state=PublishState.PUBLIC,
-        ))
-        db.commit()
-        campaign = db.get(Campaign, "camp-smoke")
-        campaign.frame_templates.append(db.get(FrameTemplate, "frame-public-3"))
-        db.commit()
-        assert len(campaign.frame_templates) >= 1
-    changes = client.post("/sync/bulk", json={"device": {"app_version": "1.4.3"}}).json()["changes"]
-    ft = changes["frame_templates"]
-    assert {f["id"] for f in ft} == {"frame-public-1", "frame-public-3"}
-    ok("newly assigned frame appears in the full set")
+        push_before = (
+            db.query(DeviceSyncLog)
+            .filter(DeviceSyncLog.device_id == device_id, DeviceSyncLog.type == "push")
+            .count()
+        )
+    r = client.get("/devices/sync/status_trigger")
+    assert r.status_code == 200, r.text
+    with remote_session() as db:
+        assert (
+            db.query(DeviceSyncLog)
+            .filter(DeviceSyncLog.device_id == device_id, DeviceSyncLog.type == "push")
+            .count()
+            == push_before
+        )
+    ok("GET /devices/sync/status_trigger never logs")
 
     # 11. Device authorization API (/auth/device/*) proxies to SSO
     r = client.get("/openapi.json")
@@ -720,23 +676,48 @@ with TestClient(app, headers=AUTH_HEADERS) as client:
         assert db.get(Device, "test-device-live").last_synced_at is None
     ok("GET status_trigger skips last_synced_at stamp")
 
-    # errors flip connectivity to error and log the API path.
+    # errors flip connectivity to error and log the API path, labeled by
+    # delivery direction: failed GET = push, failed bulk = pull, else NULL.
     r = client.get("/sessions/does-not-exist", headers=live_headers)
     assert r.status_code == 404, r.text
+    r = client.post("/whatsapp/send", json={}, headers=live_headers)
+    assert r.status_code >= 400, r.text
     with remote_session() as db:
         row = db.get(Device, "test-device-live")
         assert row.connectivity == "error", row.connectivity
-        err = (
+        errors = (
             db.query(DeviceSyncLog)
             .filter(
                 DeviceSyncLog.device_id == "test-device-live",
                 DeviceSyncLog.trigger == "api",
+                DeviceSyncLog.status == "failed",
             )
             .order_by(DeviceSyncLog.started_at.desc())
+            .limit(3)
+            .all()
+        )
+        by_path = {log.error.split(" -> ")[0]: log for log in errors}
+        get_fail = by_path.get("GET /sessions/does-not-exist")
+        other_fail = [log for path, log in by_path.items() if path.startswith("POST /whatsapp")]
+        assert get_fail is not None and get_fail.type == "push" , (get_fail, get_fail and get_fail.type)
+        assert other_fail and other_fail[0].type is None, other_fail
+    ok("failed requests log the path with the right type (push / NULL)")
+
+    # a failed bulk request logs type=pull (the ack-only endpoint logs its own
+    # rows later in the flow; 4xx rejects before it ever reaches that code).
+    with remote_session() as db:
+        bulk_fail = (
+            db.query(DeviceSyncLog)
+            .filter(
+                DeviceSyncLog.device_id == device_id,
+                DeviceSyncLog.trigger == "api",
+                DeviceSyncLog.type == "pull",
+                DeviceSyncLog.status == "failed",
+            )
             .first()
         )
-        assert err is not None and "/sessions/does-not-exist" in (err.error or ""), err
-    ok("error responses flip connectivity to error and log the path")
+        assert bulk_fail is not None and "/sync/bulk" in (bulk_fail.error or ""), bulk_fail
+    ok("failed POST /sync/bulk logs type=pull (status=failed)")
 
     # 12. WhatsApp send (WAHA free text + image), WAHA itself is faked out
     import config as svc_config

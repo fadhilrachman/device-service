@@ -1,5 +1,5 @@
 from typing import Any, Optional
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict
 
 from schemas.catalog import BoothResponse, CampaignResponse  # noqa: F401 (re-export)
 from schemas.device import DeviceResponse
@@ -9,7 +9,6 @@ __all__ = [
     "BoothResponse",
     "CameraProfileResponse",
     "CampaignResponse",
-    "CampaignConfigResponse",
     "DeviceConfigResponse",
     "DeviceResponse",
     "FrameTemplateResponse",
@@ -17,17 +16,12 @@ __all__ = [
 ]
 
 
-class CampaignConfigResponse(CampaignResponse):
-    frame_set: list[str] = Field(default_factory=list)
-
-
 class CameraProfileResponse(BaseModel):
     """Nested camera shape (adapter/capture_settings/video_settings as JSON).
 
     Mirrors ``models.camera_profile.CameraProfile`` and
-    ``schemas.plug.PlugCameraProfileResponse`` so GET /config,
-    GET /config/profiles and POST /sync/bulk return the same fields
-    the kiosk reports via POST /plug/camera_and_printer.
+    ``schemas.plug.PlugCameraProfileResponse`` so GET /config returns the
+    same fields the kiosk reports via POST /plug/camera_and_printer.
     """
 
     model_config = ConfigDict(from_attributes=True)

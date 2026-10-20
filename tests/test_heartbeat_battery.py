@@ -106,13 +106,13 @@ with TestClient(app, headers=AUTH_HEADERS) as client:
     assert r.status_code == 404, r.text
     ok("heartbeat battery without linked camera -> 404")
 
-    # 5. Bulk sync battery updates the camera row and reports device_updated
+    # 5. Bulk sync battery updates the camera row
     r = client.post("/sync/bulk", json={"device": {"battery": 64}})
     assert r.status_code == 201, r.text
-    assert r.json()["device_updated"] is True, r.text
+    assert set(r.json()) == {"results", "summary", "sync_log_id"}, r.text
     with remote_session() as db:
         assert db.get(CameraProfile, "cam-batt-1").battery == 64
-    ok("POST /sync/bulk battery -> camera row + device_updated True")
+    ok("POST /sync/bulk battery -> camera row")
 
     # 6. Bulk battery out of range is a 422
     r = client.post("/sync/bulk", json={"device": {"battery": 120}})

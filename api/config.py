@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 
 from database import get_db
@@ -15,8 +15,6 @@ from models.voucher import Voucher
 from models.voucher_batch import VoucherBatch
 from schemas.config import (
     CameraProfileResponse,
-    CampaignConfigResponse,
-    CampaignResponse,
     DeviceConfigResponse,
     DeviceResponse,
     FrameTemplateResponse,
@@ -31,7 +29,9 @@ def get_config(request: Request, db: Session = Depends(get_db)):
     """Device config bundle only: device, profiles, available frames, voucher count.
 
     Assignment data (assignment/booth/campaign) is intentionally excluded;
-    clients get it from GET /devices/me or GET /config/campaign instead.
+    clients get it from GET /devices/me instead. Kiosk profiles fetch is the
+    same bundle; the standalone GET /config/campaign and GET /config/profiles
+    endpoints were removed.
     """
     device_id = require_request_device_id(db, request)
     device = db.get(Device, device_id)
@@ -70,46 +70,6 @@ def get_config(request: Request, db: Session = Depends(get_db)):
         frames=[FrameTemplateResponse.model_validate(f) for f in frames],
         offline_vouchers=offline_vouchers,
     )
-
-
-@router.get("/campaign", response_model=CampaignConfigResponse)
-def get_campaign(request: Request, db: Session = Depends(get_db)):
-    campaign = _active_campaign(db, require_request_device_id(db, request))
-    if not campaign:
-        raise HTTPException(
-            status_code=404,
-            detail="No active campaign for this device: no assignment or the assignment window has expired.",
-        )
-    response = CampaignResponse.model_validate(campaign).model_dump()
-    response["frame_set"] = [
-        frame.id
-        for frame in sorted(campaign.frame_templates, key=lambda frame: (frame.name, frame.id))
-        if frame.deleted_at is None
-    ]
-    return CampaignConfigResponse.model_validate(response)
-
-
-@router.get("/profiles", response_model=dict)
-def get_profiles(request: Request, db: Session = Depends(get_db)):
-    device = db.get(Device, require_request_device_id(db, request))
-    camera = (
-        db.get(CameraProfile, device.camera_profile_id)
-        if device and device.camera_profile_id
-        else None
-    )
-    if camera is not None and camera.deleted_at is not None:
-        camera = None
-    printer = (
-        db.get(PrinterProfile, device.printer_profile_id)
-        if device and device.printer_profile_id
-        else None
-    )
-    if printer is not None and printer.deleted_at is not None:
-        printer = None
-    return {
-        "camera_profile": CameraProfileResponse.model_validate(camera) if camera else None,
-        "printer_profile": PrinterProfileResponse.model_validate(printer) if printer else None,
-    }
 
 
 def _active_campaign(db: Session, device_id: str) -> Campaign | None:

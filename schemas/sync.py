@@ -4,10 +4,6 @@ from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from schemas.config import CameraProfileResponse, FrameTemplateResponse, PrinterProfileResponse
-from schemas.device import DeviceAssignmentResponse
-from schemas.voucher import VoucherResponse
-
 MAX_BULK_ITEMS = 200
 # devices.app_version is String(50); enforcing it here turns an oversized value
 # into a 422 naming the field instead of a Postgres 22001 truncation error.
@@ -186,61 +182,6 @@ class BulkSyncRequest(BaseModel):
     meta: Optional[dict] = Field(default=None, description="Optional kiosk info (e.g. app_version), stored on the sync log row.")
 
 
-class SyncDeviceResponse(BaseModel):
-    """`GET /config`'s device object minus liveness + health columns.
-
-    ``last_seen_at`` / ``last_heartbeat`` are server-side liveness stamps the
-    kiosk never needs (``connectivity`` + ``last_synced_at`` carry the state
-    the kiosk actually uses). ``storage_state`` / ``printer_health`` /
-    ``printer_health`` are dropped on purpose: the kiosk *pushes* them in
-    BulkDeviceItem, so echoing them back in a pull payload would only invite
-    the client to trust stale server state.
-    """
-
-    model_config = ConfigDict(from_attributes=True)
-
-    id: str
-    device_code: str
-    tenant_id: Optional[str] = None
-    name: Optional[str] = None
-    serial_number: Optional[str] = None
-    status: str
-    is_verified: bool = False
-    capabilities: object = None
-    camera_profile_id: Optional[str] = None
-    printer_profile_id: Optional[str] = None
-    app_version: Optional[str] = None
-    last_synced_at: object = None
-    connectivity: Optional[str] = None
-    device_assignment: Optional[DeviceAssignmentResponse] = None
-
-
-class SyncConfigResponse(BaseModel):
-    """Same bundle as GET /config, minus frames and device health fields.
-
-    Frames live only in ``BulkChangesResponse.frame_templates`` as a flat list.
-    """
-
-    device: Optional[SyncDeviceResponse] = None
-    camera_profile: Optional[CameraProfileResponse] = None
-    printer_profile: Optional[PrinterProfileResponse] = None
-    offline_vouchers: int = 0
-
-
-class BulkChangesResponse(BaseModel):
-    """Server -> kiosk half of the sync, returned next to the push results.
-
-    Lets one call do both directions: the kiosk pushes offline rows and gets the
-    data it missed while it was offline.
-    """
-
-    vouchers: list[VoucherResponse] = Field(default_factory=list, description="This device's vouchers (active campaign) whose created_at or updated_at is newer than devices.last_synced_at. On the first sync (NULL watermark) every voucher is returned.")
-    config: SyncConfigResponse = Field(default_factory=SyncConfigResponse)
-    frame_templates: list[FrameTemplateResponse] = Field(default_factory=list, description="Full frame set resolved for this device: campaign-linked public frames, or every public frame when the campaign links none (same rule as GET /config.frames).")
-    voucher_since: Optional[datetime] = Field(default=None, description="Watermark used to select vouchers (null on the first sync).")
-    synced_at: Optional[datetime] = Field(default=None, description="devices.last_synced_at written at the end of this sync; the next sync diffs against it.")
-
-
 class BulkRecordResult(BaseModel):
     ref: str = Field(description="Echo of session_local_id / payment_local_id (sessions/payments) or code (vouchers).")
     id: Optional[str] = Field(default=None, description="Server row id when ok.")
@@ -254,8 +195,12 @@ class BulkSummary(BaseModel):
 
 
 class BulkSyncResponse(BaseModel):
+    """Acknowledgement of one bulk push, kiosk -> server only.
+
+    This is the pull half: server data is fetched via the GET endpoints
+    (/config, /vouchers, /frames), never in this response.
+    """
+
     results: dict[str, list[BulkRecordResult]] = Field(description="Per-record outcomes keyed by sessions, payments, vouchers.")
     summary: dict[str, BulkSummary] = Field(description="ok/failed counts per table.")
     sync_log_id: str = Field(description="device_sync_logs row id for this action (admin audit).")
-    device_updated: Optional[bool] = Field(default=None, description="null when no `device` block was sent, else true when the device row actually changed.")
-    changes: Optional[BulkChangesResponse] = Field(default=None, description="Server -> kiosk payload: vouchers changed since last_synced_at, the GET /config bundle (minus device health fields and frames), and frame templates (full set).")

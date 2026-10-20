@@ -1,10 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
-from api.config import _active_campaign, _device_vouchers, _resolve_frames
 from api.session import _snapshot_payload
-from api.voucher import _to_response as _voucher_response
 from database import get_db
 from lib.device_identity import require_request_device_id
 from lib.time import wib_now
@@ -16,28 +13,20 @@ from models.device import Device
 from models.device_sync_log import DeviceSyncLog
 from models.frame_template import FrameTemplate
 from models.payment import Payment
-from models.printer_profile import PrinterProfile
 from models.session import ActivationMode, SessionModel, SessionState
 from models.session_device_log import SessionDeviceLog
 from models.voucher import Voucher
-from schemas.config import CameraProfileResponse, FrameTemplateResponse, PrinterProfileResponse
 from schemas.sync import (
     MAX_BULK_ITEMS,
-    BulkChangesResponse,
     BulkRecordResult,
     BulkSummary,
     BulkSyncRequest,
     BulkSyncResponse,
-    SyncConfigResponse,
-    SyncDeviceResponse,
 )
 
 router = APIRouter(prefix="/sync", tags=["sync"])
 
 MAX_ERRORS_PER_TABLE = 10
-
-# Pull side of the sync, returned with the push results.
-MAX_PULL_VOUCHERS = 500
 
 # Columns the kiosk may self-report through BulkSyncRequest.device. Identity,
 # binding and capabilities columns stay admin/SSO owned, so they are never
@@ -336,64 +325,6 @@ def _apply_device_update(db: Session, device: Device, item) -> bool:
     return changed
 
 
-def _changed_vouchers(
-    db: Session, device: Device, campaign: Campaign | None, since
-) -> list[Voucher]:
-    """This device's vouchers touched after `since` (all of them when NULL)."""
-    if campaign is None:
-        return []
-    query = _device_vouchers(db, device.id, campaign)
-    if since is not None:
-        query = query.filter(
-            or_(Voucher.created_at > since, Voucher.updated_at > since)
-        )
-    return (
-        query.order_by(Voucher.created_at.desc(), Voucher.id.desc())
-        .limit(MAX_PULL_VOUCHERS)
-        .all()
-    )
-
-
-def _pull_changes(db: Session, device: Device, campaign: Campaign | None) -> BulkChangesResponse:
-    """Build the server -> kiosk half of the sync response."""
-    since = device.last_synced_at
-    vouchers = _changed_vouchers(db, device, campaign, since)
-
-    frames = _resolve_frames(db, campaign)
-
-    camera = (
-        db.get(CameraProfile, device.camera_profile_id)
-        if device.camera_profile_id
-        else None
-    )
-    printer = (
-        db.get(PrinterProfile, device.printer_profile_id)
-        if device.printer_profile_id
-        else None
-    )
-    offline_vouchers = 0
-    if campaign:
-        # Same count as GET /config: available vouchers of the active campaign.
-        offline_vouchers = (
-            _device_vouchers(db, device.id, campaign)
-            .filter(Voucher.status == "available")
-            .count()
-        )
-
-    return BulkChangesResponse(
-        # Same shape as GET /vouchers, so the kiosk merges both identically.
-        vouchers=[_voucher_response(db, voucher) for voucher in vouchers],
-        config=SyncConfigResponse(
-            device=SyncDeviceResponse.model_validate(device),
-            camera_profile=CameraProfileResponse.model_validate(camera) if camera else None,
-            printer_profile=PrinterProfileResponse.model_validate(printer) if printer else None,
-            offline_vouchers=offline_vouchers,
-        ),
-        frame_templates=[FrameTemplateResponse.model_validate(frame) for frame in frames],
-        voucher_since=since,
-    )
-
-
 @router.post(
     "/bulk",
     response_model=BulkSyncResponse,
@@ -403,15 +334,14 @@ def _pull_changes(db: Session, device: Device, campaign: Campaign | None) -> Bul
         "Push kiosk offline data (sessions, payments, voucher redemptions) to the server in one call. "
         "Device is taken from the Bearer token. Records are processed sessions-first with per-record "
         "savepoints: one bad record fails alone while siblings still apply. Retries are idempotent via "
-        "session_local_id/payment_local_id (sessions/payments) and voucher code. Writes one device_sync_logs row (trigger=kiosk). "
+        "session_local_id/payment_local_id (sessions/payments) and voucher code. Writes one device_sync_logs row (trigger=kiosk, type=pull). "
         "An optional `device` block reports the kiosk's own state (app_version, storage_state, "
         "battery, printer_health) and is applied to the caller's row; battery (0-100) is stored on the "
         "linked camera_profiles row and printer_health accepts only connect|disconnect. It also stamps last_seen_at/last_heartbeat like a heartbeat, and "
         "makes a device-only push (no records) a valid request. "
-        "The response always carries a `changes` block with the server -> kiosk half: vouchers changed "
-        "since devices.last_synced_at, the GET /config bundle (without device storage_state/camera_health/"
-        "printer_health), and frame templates (full frame set). "
-        "This sync then stamps devices.last_synced_at, which the next sync diffs against."
+        "This is the ack half only: the kiosk fetches server data via the GET endpoints "
+        "(/config, /vouchers, /templates), never in this response, so the response is just the per-record "
+        "results plus a small summary. The sync still stamps devices.last_synced_at."
     ),
     responses={
         400: {"description": "Empty payload (no records and no device fields), over 200 items, or validation error"},
@@ -442,11 +372,10 @@ def bulk_sync(payload: BulkSyncRequest, request: Request, db: Session = Depends(
             detail=f"Too many items (max {MAX_BULK_ITEMS}). Split into smaller batches.",
         )
 
-    device_updated: bool | None = None
     if has_device_update:
-        device_updated = _apply_device_update(db, device, device_payload)
+        _apply_device_update(db, device, device_payload)
 
-    log = DeviceSyncLog(device_id=device.id, trigger="kiosk", status="started", tables={})
+    log = DeviceSyncLog(device_id=device.id, trigger="kiosk", type="pull", status="started", tables={})
     db.add(log)
     db.flush()
 
@@ -492,15 +421,9 @@ def bulk_sync(payload: BulkSyncRequest, request: Request, db: Session = Depends(
             results["vouchers"].append(BulkRecordResult(ref=item.code, ok=False, error=str(exc)[:200]))
             _fail(tables, "voucher", msg)
 
-    # Pull side: everything the device missed while it was offline. Built before
-    # last_synced_at is stamped so the voucher filter uses the previous watermark.
-    campaign = _active_campaign(db, device.id)
-    changes = _pull_changes(db, device, campaign)
+    # Kiosk -> server only now: the changes half moved to the GET endpoints,
+    # so this just marks the kiosk as in contact with the server.
     device.last_synced_at = wib_now()
-    changes.synced_at = device.last_synced_at
-    # Re-snapshot the device block so the response carries the new watermark
-    # (the pull above froze the pre-stamp value).
-    changes.config.device = SyncDeviceResponse.model_validate(device)
 
     failed = sum(t["failed"] for t in tables.values())
     pushed = sum(t["pushed"] for t in tables.values())
@@ -517,13 +440,6 @@ def bulk_sync(payload: BulkSyncRequest, request: Request, db: Session = Depends(
         # key so it never collides with the caller-provided meta. mode="json"
         # unwraps the ConnectionState enums to their plain values for the JSON column.
         meta["device"] = device_payload.model_dump(exclude_none=True, mode="json")
-    # Frame list delivered in this sync, for audit.
-    meta["frame_templates"] = [frame.id for frame in changes.frame_templates]
-    meta["pull"] = {
-        "vouchers": len(changes.vouchers),
-        "frames": len(changes.frame_templates),
-        "voucher_since": changes.voucher_since.isoformat() if changes.voucher_since else None,
-    }
     log.meta = meta
     if log.status != "success":
         parts = [f"{name} failed {t['failed']}" for name, t in tables.items() if t["failed"]]
@@ -543,6 +459,4 @@ def bulk_sync(payload: BulkSyncRequest, request: Request, db: Session = Depends(
         results=results,
         summary=summary,
         sync_log_id=log.id,
-        device_updated=device_updated,
-        changes=changes,
     )

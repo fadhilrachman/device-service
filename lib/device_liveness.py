@@ -1,14 +1,20 @@
-"""Per-request kiosk liveness bookkeeping.
+﻿"""Per-request kiosk liveness + sync bookkeeping.
 
 Runs inside the request (after ProtectTokenMiddleware populated the token
 claims) and, for any request carrying a device ``client_id``:
 
 - success (2xx/3xx): ``connectivity = "connect"`` (always overwritten, so the
   vocabulary stays exactly disconnect / connect / error);
-- ``last_synced_at`` is stamped too, except for write methods
-  (POST/PATCH/PUT/DELETE) and ``GET /devices/sync/status_trigger``;
+- a successful GET (except ``GET /devices/sync/status_trigger``, which is just
+  polling) also logs one ``device_sync_logs`` row ``type="push"``, the
+  server -> kiosk data delivery half, and stamps ``last_synced_at`` (the
+  watermark the kiosk diffs against when it pulls config/vouchers);
 - error (4xx/5xx): ``connectivity = "error"`` plus one ``device_sync_logs``
-  row carrying the API path and the error message.
+  row carrying the API path and the error message: ``type="push"`` for GETs,
+  ``type="pull"`` for the bulk sync endpoint, NULL otherwise (``status``
+  already says "failed");
+- ``POST /sync/bulk`` logs its own row (``type="pull"``) inside the
+  endpoint; the request also stamps the device's ``last_synced_at`` there.
 
 Everything here is best-effort: bookkeeping must never break the kiosk
 response, so all DB work is guarded and failures only log a warning.
@@ -31,6 +37,8 @@ logger = logging.getLogger(__name__)
 
 WRITE_METHODS = {"POST", "PATCH", "PUT", "DELETE"}
 STATUS_TRIGGER_PATH = "/devices/sync/status_trigger"
+# The bulk sync lives at /sync/bulk (router prefix "/sync"), not /devices/*.
+BULK_PATH = "/sync/bulk"
 
 
 def _error_detail(status_code: int, body: bytes) -> str:
@@ -48,6 +56,19 @@ def _error_detail(status_code: int, body: bytes) -> str:
     return f"HTTP {status_code}"
 
 
+def _log_type(method: str, path: str) -> str | None:
+    """Label a failed-request log row by delivery direction.
+
+    GET = the server pushes data to the kiosk; the bulk sync (whatever failed
+    method) is the kiosk -> server pull; other writes leave type NULL.
+    """
+    if method.upper() == "GET":
+        return "push"
+    if path.rstrip("/") == BULK_PATH:
+        return "pull"
+    return None
+
+
 def _record_liveness(
     client_id: str, method: str, path: str, status_code: int, body: bytes
 ) -> None:
@@ -59,14 +80,26 @@ def _record_liveness(
             now = wib_now()
             if status_code < 400:
                 device.connectivity = "connect"
-                if method.upper() == "GET" and path.rstrip("/") != STATUS_TRIGGER_PATH:
+                is_push = method.upper() == "GET" and path.rstrip("/") != STATUS_TRIGGER_PATH
+                if is_push:
                     device.last_synced_at = now
+                    db.add(
+                        DeviceSyncLog(
+                            device_id=device.id,
+                            trigger="api",
+                            type="push",
+                            status="success",
+                            started_at=now,
+                            finished_at=now,
+                        )
+                    )
             else:
                 device.connectivity = "error"
                 db.add(
                     DeviceSyncLog(
                         device_id=device.id,
                         trigger="api",
+                        type=_log_type(method, path),
                         status="failed",
                         error=f"{method.upper()} {path} -> {_error_detail(status_code, body)}",
                         started_at=now,
